@@ -69,7 +69,7 @@ for rnn in [rnn1, rnn2, rnn3]:
         print("loss (standard computation) {:.6f}".format(l_std))
 
         mods.zero_grad()
-        l_chunk, _ = chunked_rnn(inp, rnn, outp, x, y, None, n)
+        l_chunk = chunked_rnn(inp, rnn, outp, x, y, None, n)
         g_chunk = [p.grad.clone() for p in mods.parameters()]
         print("loss (chunked computation) {:.6f}".format(l_chunk))
 

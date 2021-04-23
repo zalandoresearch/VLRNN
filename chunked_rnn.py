@@ -3,7 +3,15 @@ import torch
 from utilities import struct_flatten, requires_grad, grad_of
 
 
-def chunked_rnn(inp, rnn, outp, x, y, h0, N):
+def chunk_lengths(chunks: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    cum_chunks = chunks.cumsum(0)[:-1]
+    lengths = lengths.view(-1, 1)
+    lengths = torch.cat([lengths, lengths - cum_chunks.view(1, -1)], 1)
+    lengths = torch.min(torch.max(lengths, torch.zeros_like(lengths)), chunks.view(1, -1))
+    return lengths
+
+
+def chunked_rnn(inp, rnn, outp, x, y, h0, N, lengths=None):
     # channels last:
     # x is (n_batch, n_seq, n_channels)
 
@@ -33,9 +41,10 @@ def chunked_rnn(inp, rnn, outp, x, y, h0, N):
         y_n = y_chunks[n]
         h_n = h_chunks[n]
 
-        if h_n is not None:
-            # h_n.requires_grad = True
-            requires_grad(h_n, True)
+        if torch.is_grad_enabled():
+            if h_n is not None:
+                # h_n.requires_grad = True
+                requires_grad(h_n, True)
 
         z_n, h_n_plus_1 = rnn(inp(x_n), h_n)
         loss_n = outp(z_n, y_n)
@@ -46,20 +55,21 @@ def chunked_rnn(inp, rnn, outp, x, y, h0, N):
         for a, b in zip(struct_flatten(h_n_plus_1), struct_flatten(h_chunks[n + 1])):
             assert torch.allclose(a, b)
 
-        if n < N - 1:
-            loss_n.backward(retain_graph=True)
-            h_n_plus_1_ = list(struct_flatten(h_n_plus_1))
-            delta_h_n_plus_1_ = list(struct_flatten(delta_h_n_plus_1))
+        if torch.is_grad_enabled():
+            if n < N - 1:
+                loss_n.backward(retain_graph=True)
+                h_n_plus_1_ = list(struct_flatten(h_n_plus_1))
+                delta_h_n_plus_1_ = list(struct_flatten(delta_h_n_plus_1))
 
-            torch.autograd.backward(h_n_plus_1_, grad_tensors=delta_h_n_plus_1_)
-        else:
-            loss_n.backward()
+                torch.autograd.backward(h_n_plus_1_, grad_tensors=delta_h_n_plus_1_)
+            else:
+                loss_n.backward()
 
-        if h_n is not None:
-            delta_h_n_plus_1 = grad_of(h_n)
-        else:
-            delta_h_n_plus_1 = None
+            if h_n is not None:
+                delta_h_n_plus_1 = grad_of(h_n)
+            else:
+                delta_h_n_plus_1 = None
 
-        loss = loss + loss_n.item()
+        loss = loss + loss_n #.item()
 
-    return loss, torch.cat(loss_chunks, 1)
+    return loss #, torch.cat(loss_chunks, 1)
