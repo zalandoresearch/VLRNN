@@ -5,4 +5,4 @@
 - ~~no_grad computation~~
 - loss aggregation
 - unit tests
-- GPU computation
+- ~~GPU computation~~
