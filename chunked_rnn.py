@@ -15,6 +15,8 @@ def chunked_rnn(inp, rnn, outp, x, y, h0, N, lengths=None):
     # channels last:
     # x is (n_batch, n_seq, n_channels)
 
+    N_total = x.shape[1]
+
     inp.zero_grad()
     rnn.zero_grad()
     outp.zero_grad()
@@ -47,13 +49,13 @@ def chunked_rnn(inp, rnn, outp, x, y, h0, N, lengths=None):
                 requires_grad(h_n, True)
 
         z_n, h_n_plus_1 = rnn(inp(x_n), h_n)
-        loss_n = outp(z_n, y_n)
+        loss_n = outp(z_n, y_n)/N_total
 
         loss_chunks[n] = loss_n.detach()
         loss_n = loss_n.sum(1).mean(0)
 
-        for a, b in zip(struct_flatten(h_n_plus_1), struct_flatten(h_chunks[n + 1])):
-            assert torch.allclose(a, b)
+        # for a, b in zip(struct_flatten(h_n_plus_1), struct_flatten(h_chunks[n + 1])):
+        #     assert torch.allclose(a, b)
 
         if torch.is_grad_enabled():
             if n < N - 1:
@@ -70,6 +72,6 @@ def chunked_rnn(inp, rnn, outp, x, y, h0, N, lengths=None):
             else:
                 delta_h_n_plus_1 = None
 
-        loss = loss + loss_n #.item()
+        loss = loss + loss_n.detach() #.item()
 
     return loss #, torch.cat(loss_chunks, 1)
