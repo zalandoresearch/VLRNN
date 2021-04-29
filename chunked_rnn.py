@@ -11,7 +11,7 @@ def chunk_lengths(chunks: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
     return lengths
 
 
-def chunked_rnn(inp, rnn, outp, x, y, h0, N, lengths=None):
+def chunked_rnn(inp, rnn, outp, x, y, h0, N, lengths=None, loss_weights=None):
     # channels last:
     # x is (n_batch, n_seq, n_channels)
 
@@ -52,7 +52,10 @@ def chunked_rnn(inp, rnn, outp, x, y, h0, N, lengths=None):
         loss_n = outp(z_n, y_n)/N_total
 
         loss_chunks[n] = loss_n.detach()
-        loss_n = loss_n.sum(1).mean(0)
+        if loss_weights is None:
+            loss_n = loss_n.sum(1).mean(0)
+        else:
+            loss_n = (loss_n.sum(1)*loss_weights).sum(0)
 
         # for a, b in zip(struct_flatten(h_n_plus_1), struct_flatten(h_chunks[n + 1])):
         #     assert torch.allclose(a, b)

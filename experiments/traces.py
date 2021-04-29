@@ -38,7 +38,8 @@ class Trace(Callback):
 
         self.traces = {}
         self.trace_length = 0
-        self.name = 'logs'#trainer.logger.log_dir
+        # self.name = trainer.logger.log_dir
+        self.name = trainer.logger.experiment.dir
         self.epoch = 0
         self.tick = 0
         self.thinout = 1
@@ -131,6 +132,7 @@ class Trace(Callback):
                     plt.savefig(filename, bbox_inches='tight')
 
                 plt.close(fig)
+                del fig
             except TypeError:  # in particular catch missing sample_fn
                 pass
 

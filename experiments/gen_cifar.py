@@ -1,3 +1,9 @@
+import os
+from shutil import copyfile
+
+from haste_pytorch import LayerNormLSTM
+from pytorch_lightning.utilities import rank_zero_only
+
 from traces import Trace
 from typing import Any
 
@@ -29,7 +35,11 @@ class Input(nn.Module):
         self.emb_y = nn.Embedding(256, n_in)
         self.emb_c = nn.Embedding(self.C, n_in)
         self.emb_h = nn.Embedding(self.H, n_in)
-        self.emb_w = nn.Embedding(self.H, n_in)
+        self.emb_w = nn.Embedding(self.W, n_in)
+        # self.emb_c.weight.data.normal_(0.0, 0.01)
+        # self.emb_h.weight.data.normal_(0.0, 0.01)
+        # self.emb_w.weight.data.normal_(0.0, 0.01)
+
 
     def coord_seq(self, device, mode='HWC'):
         if mode == 'HWC':
@@ -54,15 +64,16 @@ class Input(nn.Module):
 
 class OutputModule(nn.Module):
 
-    def __init__(self, n_hidden):
+    def __init__(self, n_hidden, p0=0.0):
         super().__init__()
+        self.p0 = p0
         self.ffwd = nn.Sequential(nn.Linear(n_hidden, 2 * n_hidden),
                                   nn.ReLU(),
                                   nn.Linear(2 * n_hidden, 256))
         self.loss = nn.CrossEntropyLoss(reduction='none')
 
     def forward(self, x, y=None):
-        p0 = 5.0 / 3072
+        p0 = self.p0
         if y is None:
             logits = self.ffwd(x)
             logits = torch.log((1.0-p0)*logits.softmax(dim=2) + p0/256.0)
@@ -80,7 +91,11 @@ class ResLSTM(nn.Module):
         self.n_in = n_in
         self.n_hidden = n_hidden
         self.n_layers = n_layers
-        self.lstm = nn.ModuleList([nn.LSTM(n_in if i == 0 else n_hidden, n_hidden, num_layers=1, batch_first=batch_first)
+        self.lstm = nn.ModuleList([LayerNormLSTM(n_in if i == 0 else n_hidden, n_hidden,
+                                                 batch_first=batch_first,
+                                                 forget_bias=1.0,
+                                                 dropout=0.0,
+                                                 zoneout=0.0)
                                    for i in range(self.n_layers)])
 
     def forward(self, x, hc=None):
@@ -97,9 +112,11 @@ class ResLSTM(nn.Module):
 
 class GenCifar(pl.LightningModule):
     batch_size: int = 32
+    sample_negatives = 0
     n_hidden: int = 256
     n_layers: int = 4
     n_chunks: int = 10
+    p0: float = 5.0/3072
 
     transform = ToByteTensor()
 
@@ -113,36 +130,47 @@ class GenCifar(pl.LightningModule):
         # self.rnn = nn.LSTM(self.n_hidden, self.n_hidden, num_layers=self.n_layers, batch_first=True)
         self.rnn = ResLSTM(self.n_hidden, self.n_hidden, n_layers=self.n_layers, batch_first=True)
 
-        self.out = OutputModule(self.n_hidden)
+        self.out = OutputModule(self.n_hidden, self.p0)
 
-    def forward(self, batch):
+    def forward(self, batch, sample_negatives=0):
         y, _ = batch
         N, C, H, W = y.shape
+
+        if sample_negatives:
+            y_samp = self.sample(sample_negatives)
+            loss_weights = torch.ones(N+sample_negatives, device=y.device, dtype=torch.float)
+            loss_weights[N:] = -1.0
+            loss_weights = loss_weights/N
+            N = N+sample_negatives
+            y = torch.cat([y, y_samp], 0)
+        else:
+            loss_weights = None
+
         y = y.permute(0, 2, 3, 1).reshape(N, H * W * C)
         x = torch.cat([torch.zeros_like(y[:, :1]), y[:, :-1]], 1)
-        cs = self.inp.coord_seq(device=self.device).expand(N, H*W*C, 3)
+        cs = self.inp.coord_seq(device=x.device).expand(N, H*W*C, 3)
         x = torch.cat([x.unsqueeze(2), cs], 2)
 
-        loss = chunked_rnn(self.inp, self.rnn, self.out, x, y, None, self.n_chunks)
+        loss = chunked_rnn(self.inp, self.rnn, self.out, x, y, None, self.n_chunks,
+                           loss_weights=loss_weights)
         return loss
 
-    def sample(self, N, sample_shape=(3,32,32)):
+    def sample(self, N, sample_shape=(3, 32, 32)):
         C, H, W = sample_shape
-        x = torch.zeros(N, C*H*W, 1, dtype=torch.long, device=self.device)
-        cs = self.inp.coord_seq(device=self.device).expand(N, H*W*C, 3)
-        x = torch.cat([x, cs], 2)
+        x = torch.zeros(N, C * H * W, 1, dtype=torch.long, device=self.device)
+        cs = self.inp.coord_seq(device=self.device).expand(N, H * W * C, 3)
         hc = None
         with torch.no_grad():
-            for t in range(C*H*W):
-                tmp = self.inp(x[:, t-1:t] if t > 0 else x[:, :1])
+            for t in range(C * H * W):
+                tmp = self.inp(torch.cat([x[:, t - 1:t] if t > 0 else x[:, :1], cs[:, t:t + 1]], dim=2))
                 tmp, hc = self.rnn(tmp, hc)
-                _, x[:, t:t+1, 0] = self.out(tmp)
+                _, x[:, t:t + 1, 0] = self.out(tmp)
 
         x = x[..., 0].reshape(N, H, W, C).permute(0, 3, 1, 2)
         return x
 
     def training_step(self, batch, batch_idx):
-        loss = self.forward(batch)
+        loss = self.forward(batch, self.sample_negatives)
         self.log('train_loss', loss)
         return loss
 
@@ -161,18 +189,18 @@ class GenCifar(pl.LightningModule):
         trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
                                                 download=True, transform=self.transform)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size,
-                                                  shuffle=True, num_workers=2)
+                                                  shuffle=True, num_workers=8)
         return trainloader
 
     def val_dataloader(self) -> DataLoader:
         valset = torchvision.datasets.CIFAR10(root='./data', train=False,
                                               download=True, transform=self.transform)
         valloader = torch.utils.data.DataLoader(valset, batch_size=self.batch_size,
-                                                shuffle=True, num_workers=2)
+                                                shuffle=False, num_workers=8)
         return valloader
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=5e-3)
         return optimizer
         #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
         #return [optimizer],[scheduler]
@@ -230,19 +258,30 @@ if __name__ == '__main__':
 
     tracked_gradient_global_only()
     model = GenCifar()
+    model.load_from_checkpoint('wandb/run-20210427_103612-25lrrw80/files/cifar-gen/25lrrw80/checkpoints/epoch=48-step=76586.ckpt')
     logger = WandbLogger(project='cifar-gen')
+    log_dir = logger.experiment.dir
+
+    if rank_zero_only.rank == 0:
+        for fn in ['gen_cifar.py', 'traces.py', '../chunked_rnn.py', '../utilities.py']:
+            filename = os.path.basename(fn)
+            copyfile(fn, os.path.join(log_dir, filename))
+
     logging_cb = LoggingCallback()
 
     traces = Trace(13, None, columns=8,
                    log_buffers=False  # to not log all the batch norm running means and variances
                    )
 
-    trainer = pl.Trainer(max_epochs=50,
+    trainer = pl.Trainer(max_epochs=100,
                          gpus=1,
+                         # accelerator="ddp",
                          # automatic_optimization=False,
                          logger=logger,
                          callbacks=[traces, logging_cb],
                          # gradient_clip_val=10000,
-                         track_grad_norm=2)
+                         track_grad_norm=2,
+                         resume_from_checkpoint="wandb/run-20210427_103612-25lrrw80/files/cifar-gen/25lrrw80/checkpoints/epoch=48-step=76586.ckpt"
+                         )
 
     trainer.fit(model)
