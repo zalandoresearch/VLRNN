@@ -3,6 +3,7 @@ from shutil import copyfile
 
 from haste_pytorch import LayerNormLSTM
 from pytorch_lightning.utilities import rank_zero_only
+from torch.nn.functional import softplus
 
 from traces import Trace
 from typing import Any
@@ -36,9 +37,10 @@ class Input(nn.Module):
         self.emb_c = nn.Embedding(self.C, n_in)
         self.emb_h = nn.Embedding(self.H, n_in)
         self.emb_w = nn.Embedding(self.W, n_in)
-        # self.emb_c.weight.data.normal_(0.0, 0.01)
-        # self.emb_h.weight.data.normal_(0.0, 0.01)
-        # self.emb_w.weight.data.normal_(0.0, 0.01)
+        self.emb_y.weight.data.normal_(0.0, 0.01)
+        self.emb_c.weight.data.normal_(0.0, 0.01)
+        self.emb_h.weight.data.normal_(0.0, 0.01)
+        self.emb_w.weight.data.normal_(0.0, 0.01)
 
 
     def coord_seq(self, device, mode='HWC'):
@@ -64,34 +66,55 @@ class Input(nn.Module):
 
 class OutputModule(nn.Module):
 
-    def __init__(self, n_hidden, p0=0.0):
+    def __init__(self, n_hidden, p0=0.0, loc_scale=False):
         super().__init__()
         self.p0 = p0
-        self.ffwd = nn.Sequential(nn.Linear(n_hidden, 2 * n_hidden),
-                                  nn.ReLU(),
-                                  nn.Linear(2 * n_hidden, 256))
+        self.loc_scale = loc_scale
+        if self.loc_scale:
+            self.ffwd = nn.Sequential(nn.Linear(n_hidden, n_hidden//2),
+                                      nn.ReLU(),
+                                      nn.Linear(n_hidden//2, 2))
+        else:
+            self.ffwd = nn.Sequential(nn.Linear(n_hidden, (n_hidden+256)//2),
+                                      nn.ReLU(),
+                                      nn.Linear((n_hidden+256)//2, 256))
+
         self.loss = nn.CrossEntropyLoss(reduction='none')
+
+    @staticmethod
+    def logits_from_loc_scale(z):
+        mu = torch.tanh(z[..., 0:1])
+        rho = softplus(z[..., 1:2])
+
+        logits = torch.linspace(-1, 1, 256, device=z.device, dtype=z.dtype).repeat(mu.shape)
+        logits = -(logits-mu)**2 / rho
+        return logits
 
     def forward(self, x, y=None):
         p0 = self.p0
         if y is None:
             logits = self.ffwd(x)
+            if self.loc_scale:
+                logits = self.logits_from_loc_scale(logits)
             logits = torch.log((1.0-p0)*logits.softmax(dim=2) + p0/256.0)
             dist = torch.distributions.Categorical(logits=logits)
             y = dist.sample()
             return -dist.log_prob(y), y
         else:
-            logits = self.ffwd(x).transpose(1, 2)
+            logits = self.ffwd(x)
+            if self.loc_scale:
+                logits = self.logits_from_loc_scale(logits)
+            logits = logits.transpose(1, 2)
             logits = torch.log((1.0-p0)*logits.softmax(dim=1) + p0/256.0)
             return self.loss(logits, y)
 
 class ResLSTM(nn.Module):
-    def __init__(self, n_in, n_hidden, n_layers, batch_first):
+    def __init__(self, n_units, n_layers, batch_first):
         super(ResLSTM, self).__init__()
-        self.n_in = n_in
-        self.n_hidden = n_hidden
+        assert len(n_units) == n_layers+1
+        self.n_units = n_units
         self.n_layers = n_layers
-        self.lstm = nn.ModuleList([LayerNormLSTM(n_in if i == 0 else n_hidden, n_hidden,
+        self.lstm = nn.ModuleList([LayerNormLSTM(n_units[i], n_units[i+1],
                                                  batch_first=batch_first,
                                                  forget_bias=1.0,
                                                  dropout=0.0,
@@ -104,8 +127,8 @@ class ResLSTM(nn.Module):
         z = x
         for i in range(self.n_layers):
             z, hc_out[i] = self.lstm[i](x, None if hc is None else hc[i])
-            if i > 0 or self.n_in == self.n_hidden:
-                z = z + x
+            # if i > 0 or self.n_in == self.n_hidden:
+            #     z = z + x
             x = z
         return z, hc_out
 
@@ -113,10 +136,12 @@ class ResLSTM(nn.Module):
 class GenCifar(pl.LightningModule):
     batch_size: int = 32
     sample_negatives = 0
+    n_units: [int] = [16, 32, 64, 128, 256]
     n_hidden: int = 256
     n_layers: int = 4
-    n_chunks: int = 10
+    n_chunks: int = 5
     p0: float = 5.0/3072
+    lr: float = 1e-3
 
     transform = ToByteTensor()
 
@@ -126,9 +151,9 @@ class GenCifar(pl.LightningModule):
         # self.inp = nn.Sequential(nn.Embedding(256, self.n_hidden),
         #                          nn.Linear(self.n_hidden, self.n_hidden),
         #                          nn.ReLU())
-        self.inp = Input(self.n_hidden)
+        self.inp = Input(self.n_units[0])
         # self.rnn = nn.LSTM(self.n_hidden, self.n_hidden, num_layers=self.n_layers, batch_first=True)
-        self.rnn = ResLSTM(self.n_hidden, self.n_hidden, n_layers=self.n_layers, batch_first=True)
+        self.rnn = ResLSTM(self.n_units, n_layers=self.n_layers, batch_first=True)
 
         self.out = OutputModule(self.n_hidden, self.p0)
 
@@ -200,7 +225,7 @@ class GenCifar(pl.LightningModule):
         return valloader
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
         #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
         #return [optimizer],[scheduler]
@@ -217,11 +242,14 @@ class GenCifar(pl.LightningModule):
         return fig
 
     def log_coord_sequences(self):
+        shapes = {256: (16, 16),
+                  16: (4, 4)}
+
         with torch.no_grad():
             cs = self.inp.coord_seq(device=self.device)
             y = self.inp.emb_c(cs[..., 0]) + self.inp.emb_h(cs[..., 1]) + self.inp.emb_w(cs[..., 2])
-
-            y = y.reshape(32, 32, 3, 16, 16).permute(3, 0, 4, 1, 2).reshape(16 * 32, 16 * 32, 3)
+            n1,n2 = shapes[y.shape[-1]]
+            y = y.reshape(32, 32, 3, n1, n2).permute(3, 0, 4, 1, 2).reshape(n1 * 32, n2 * 32, 3)
             y_range = torch.quantile(y.view(-1), torch.tensor([0.05, 0.95], device=self.device), 0)
             y = (y - y_range[0]) / (y_range[1] - y_range[0])
             y = y.clip(0.0, 1.0)
