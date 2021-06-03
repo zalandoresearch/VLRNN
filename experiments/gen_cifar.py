@@ -286,7 +286,8 @@ if __name__ == '__main__':
 
     tracked_gradient_global_only()
     model = GenCifar()
-    model.load_from_checkpoint('wandb/run-20210427_103612-25lrrw80/files/cifar-gen/25lrrw80/checkpoints/epoch=48-step=76586.ckpt')
+    checkpoint = "wandb/run-20210506_182336-dz7x1ica/files/cifar-gen/dz7x1ica/checkpoints/epoch=112-step=176618.ckpt"
+    model.load_from_checkpoint(checkpoint)
     logger = WandbLogger(project='cifar-gen')
     log_dir = logger.experiment.dir
 
@@ -301,15 +302,15 @@ if __name__ == '__main__':
                    log_buffers=False  # to not log all the batch norm running means and variances
                    )
 
-    trainer = pl.Trainer(max_epochs=100,
+    trainer = pl.Trainer(max_epochs=1000,
                          gpus=1,
                          # accelerator="ddp",
                          # automatic_optimization=False,
                          logger=logger,
                          callbacks=[traces, logging_cb],
-                         # gradient_clip_val=10000,
+                         gradient_clip_val=8,
                          track_grad_norm=2,
-                         resume_from_checkpoint="wandb/run-20210427_103612-25lrrw80/files/cifar-gen/25lrrw80/checkpoints/epoch=48-step=76586.ckpt"
+                         resume_from_checkpoint=checkpoint
                          )
 
     trainer.fit(model)
