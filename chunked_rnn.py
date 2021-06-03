@@ -1,6 +1,45 @@
 import torch
+from torch.nn.utils.rnn import PackedSequence
 
 from utilities import struct_flatten, requires_grad, grad_of
+
+
+def chunk_packed_sequence( x: PackedSequence, y: PackedSequence, N) -> PackedSequence:
+
+    assert torch.equal(x.batch_sizes, y.batch_sizes)
+    
+    M = x.batch_sizes.sum()
+
+    x_out = []
+    y_out = []
+
+    def append(last_i, i, last_j, j):
+            print(last_i,i, last_j, j)
+            x_out.append( PackedSequence(
+                data = x.data[last_j:j],
+                batch_sizes = x.batch_sizes[last_i:i]
+            ))
+            y_out.append( PackedSequence(
+                data = y.data[last_j:j],
+                batch_sizes = y.batch_sizes[last_i:i]
+            ))
+
+    last_i = 0 # index into batch_sizes
+    last_j = 0 # index into data
+    j = 0
+    for i in range(x.batch_sizes.shape[0]):
+        if M<=0:
+            append(last_i, i, last_j, j)
+            M = M + x.batch_sizes.sum()
+            last_i = i
+            last_j = j
+        else:
+            M = M - N*x.batch_sizes[i]
+        j = j + x.batch_sizes[i]
+    append(last_i, x.batch_sizes.shape[0], last_j, j)
+
+    return x_out, y_out
+
 
 
 def chunk_lengths(chunks: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
