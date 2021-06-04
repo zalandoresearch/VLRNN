@@ -1,27 +1,32 @@
+from typing import List
 import torch
 from torch.nn.utils.rnn import PackedSequence
 
 from utilities import struct_flatten, requires_grad, grad_of
 
 
-def chunk_packed_sequence( x: PackedSequence, y: PackedSequence, N) -> PackedSequence:
+def chunk_packed_sequence( x: PackedSequence, N) -> List[PackedSequence]:
+    """chunk a packed sequence into approximately N axpprimately equally long packed sequences
 
-    assert torch.equal(x.batch_sizes, y.batch_sizes)
-    
+    Args:
+        x (PackedSequence): input sequence as returned from torch.nn.utils.rnn.pack_sequence
+        N (int): number of output sequences
+
+    Returns:
+        list of packed sequence chunks, each being a valid packed sequence
+    """
+
     M = x.batch_sizes.sum()
 
     x_out = []
-    y_out = []
-
     def append(last_i, i, last_j, j):
             print(last_i,i, last_j, j)
+            idxs = torch.arange(x.batch_sizes[last_i])
             x_out.append( PackedSequence(
                 data = x.data[last_j:j],
-                batch_sizes = x.batch_sizes[last_i:i]
-            ))
-            y_out.append( PackedSequence(
-                data = y.data[last_j:j],
-                batch_sizes = y.batch_sizes[last_i:i]
+                batch_sizes = x.batch_sizes[last_i:i],
+                sorted_indices = idxs,
+                unsorted_indices = idxs
             ))
 
     last_i = 0 # index into batch_sizes
@@ -38,7 +43,40 @@ def chunk_packed_sequence( x: PackedSequence, y: PackedSequence, N) -> PackedSeq
         j = j + x.batch_sizes[i]
     append(last_i, x.batch_sizes.shape[0], last_j, j)
 
-    return x_out, y_out
+    return x_out
+
+
+def combine_packed_sequence(x_chunk, sorted_indices=None, unsorted_indices=None)-> PackedSequence:
+    """combine chunked packed sequences 
+
+    Args:
+        x_chunk (List[PackedSequence]): list of chunked packed sequences as returned from chunk_packed_sequence
+        sorted_indices (torch.Tensor, optional): optional premutation ordder for the resulting packed sequence. Defaults to None.
+        unsorted_indices (torch.Tensor, optional): optional inversepremutation ordder for the resulting packed sequence. Defaults to None.
+
+    Returns:
+        PackedSequence: resulting packed sequence
+    """
+         
+    N = x_chunk[0].batch_sizes[0]
+    x_data = torch.cat([x_.data for x_ in x_chunk], dim=0)
+    x_batch_sizes = torch.cat([x_.batch_sizes for x_ in x_chunk], dim=0) 
+
+    if sorted_indices is None:
+        assert unsorted_indices is None
+        x_sorted_indices = torch.arange(N)
+        x_unsorted_indices = torch.arange(N)
+    else:
+        assert unsorted_indices is not None
+        x_sorted_indices = sorted_indices
+        x_unsorted_indices = unsorted_indices
+
+    return PackedSequence( data = x_data,
+                            batch_sizes=x_batch_sizes,
+                            sorted_indices=x_sorted_indices,
+                            unsorted_indices=x_unsorted_indices)
+    
+
 
 
 
