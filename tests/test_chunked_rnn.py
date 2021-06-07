@@ -8,7 +8,7 @@ import chunked_rnn
 
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import PackedSequence, pack_sequence
+from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
 
 
 import pytest
@@ -67,15 +67,23 @@ def test_chunk_packed_sequence(num_channels, num_chunks):
     equal_packed_sequences(x, x_restore)
 
 
+def test_lens_of_packed_sequence():
+    num_batch = 10
+    max_seq_len = 100
+    min_seq_len = 1
+    num_channels = ()
+    lens = torch.randint(min_seq_len, max_seq_len+1, (num_batch,)) 
+    x = pack_sequence([torch.randn(l,) for l in lens], enforce_sorted=False)
+
+    assert torch.equal(chunked_rnn.lens_of_packed_sequence(x), lens)
 
 
 
 # testing chunked_rnn with non-packed sequences
+Globals = namedtuple("globals", "n_batch n_x n_in n_hidden n_out n_seq dtype var")
 
-Globals = namedtuple("globals", "n_batch n_x n_in n_hidden n_out n_seq dtype")
-
-@pytest.fixture(scope="module")
-def globals():
+@pytest.fixture(scope="module", params=[True, False], ids=["PACKED", "FIXED"])
+def globals(request):
     return Globals(
         n_batch = 8,
         n_x = 2,
@@ -83,13 +91,25 @@ def globals():
         n_hidden = 32,
         n_out = 5,
         n_seq = 100,
-        dtype = torch.double
+        dtype = torch.double,
+        var = request.param
     )
 
 # input model
+class Inp(nn.Sequential):
+    def __init__(self, n_in):
+        super().__init__(nn.Linear(n_in ,10), nn.ELU(), nn.Linear(10 ,n_in), nn.ELU())
+
+    def forward(self, x):
+        if isinstance(x, torch.Tensor):
+            return super().forward(x)
+        else:
+            return PackedSequence(data=super().forward(x.data), batch_sizes=x.batch_sizes, 
+                                  sorted_indices=x.sorted_indices, unsorted_indices=x.unsorted_indices)
+
 @pytest.fixture(scope="module")
 def inp(globals):
-    return nn.Sequential( nn.Linear(globals.n_in ,10), nn.ELU(), nn.Linear(10 ,globals.n_in), nn.ELU()).to(globals.dtype)
+    return Inp(globals.n_in).to(globals.dtype)
 
 
 # output model
@@ -98,9 +118,17 @@ class Outp(nn.Sequential):
     def __init__(sel, n_hidden, n_out):
         super().__init__( nn.Linear(n_hidden ,10) ,nn.ELU() ,nn.Linear(10 ,n_out))
 
-    def forward(self, z, y):
+    def _forward(self, z, y):
         logits = super().forward(z)
         return -torch.distributions.Categorical(logits=logits).log_prob(y)
+
+    def forward(self, z, y):
+        if isinstance(z, torch.Tensor):
+            return self._forward(z,y)
+        else:
+            l = PackedSequence(data=self._forward(z.data, y.data), batch_sizes=z.batch_sizes, 
+                               sorted_indices=z.sorted_indices, unsorted_indices=z.unsorted_indices)    
+            return l
 
 @pytest.fixture(scope="module")
 def outp(globals):
@@ -123,32 +151,55 @@ class FancyRNN(nn.Module):
 
 
 
-@pytest.fixture(scope="module", params=[1,2,3])
+@pytest.fixture(scope="module", params=['GRU','LSTM','FANCY'])
 def rnn(request,globals):
-    if request.param==1:
-        return nn.GRU(globals.n_in, globals.n_hidden, batch_first=True).to(torch.double)
-    if request.param==2:
-        return nn.LSTM(globals.n_in, globals.n_hidden, batch_first=True, num_layers=3).to(torch.double)
-    if request.param==3:
-        return FancyRNN(globals.n_in, globals.n_hidden).to(torch.double)
+    if request.param=='GRU':
+        return nn.GRU(globals.n_in, globals.n_hidden, batch_first=True).to(globals.dtype)
+    if request.param=='LSTM':
+        return nn.LSTM(globals.n_in, globals.n_hidden, batch_first=True, num_layers=3).to(globals.dtype)
+    if request.param=='FANCY':
+        return FancyRNN(globals.n_in, globals.n_hidden).to(globals.dtype)
 
 
 
-@pytest.mark.parametrize("loss_scale",["mean","sum"])
+
+def create_sequences(globals):
+
+    if globals.var:
+        lens = torch.randint(globals.n_seq//5, globals.n_seq+1, (globals.n_batch,)) 
+        x = pack_sequence([torch.randn(l, globals.n_in, dtype=globals.dtype) for l in lens], enforce_sorted=False)
+        y = pack_sequence([torch.randint(0, globals.n_out, (l,)) for l in lens], enforce_sorted=False)
+       
+    else:
+        x = torch.randn(globals.n_batch, globals.n_seq, globals.n_in, dtype=globals.dtype)
+        y = torch.randint(0, globals.n_out, (globals.n_batch, globals.n_seq))
+
+    return x,y    
+
+
+
+
+@pytest.mark.parametrize("loss_scale",["sum","mean"])
 @pytest.mark.parametrize("n",[1,2,7,10])
 def test_chunked_rnn( globals, inp, outp, rnn, n, loss_scale):
         #print("{} chunks".format(n))
         mods = nn.ModuleList([inp, outp, rnn])
 
-        x = torch.randn(globals.n_batch, globals.n_seq, globals.n_in, dtype=torch.double)
-        y = torch.randint(0, globals.n_out, (globals.n_batch, globals.n_seq))
+        x,y = create_sequences(globals)
 
         mods.zero_grad()
-        z, h = rnn(inp(x), None)
-        if loss_scale == "mean":
-            l_std = outp(z, y).mean(1).mean()
+        x_ = inp(x)
+        z, h = rnn(x_, None)
+
+        l_std = outp(z, y)
+        if globals.var:
+            l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
+            l_std = l_std.sum(1)
+            if loss_scale == "mean":
+                l_std /= lens
         else:
-            l_std = outp(z, y).sum(1).mean()
+            l_std = l_std.mean(1) if loss_scale == "mean" else l_std.sum(1)
+        l_std = l_std.mean()
 
         l_std.backward()
         l_std = l_std.item()
@@ -160,7 +211,7 @@ def test_chunked_rnn( globals, inp, outp, rnn, n, loss_scale):
         g_chunk = [p.grad.clone() for p in mods.parameters()]
         print("loss (chunked computation) {:.6f}".format(l_chunk))
 
-        assert all([torch.allclose(g1, g2) for g1, g2 in zip(g_std, g_chunk)])
+        assert all([torch.allclose(g1, g2) for g1, g2 in zip(g_chunk, g_std )])
         #print("losses and gradients equal:", good)
         #print()
 
