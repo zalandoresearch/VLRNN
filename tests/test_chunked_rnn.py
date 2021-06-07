@@ -70,15 +70,13 @@ def test_chunk_packed_sequence(num_channels, num_chunks):
 
 
 
-
-
 # testing chunked_rnn with non-packed sequences
 
-Params = namedtuple("Params", "n_batch n_x n_in n_hidden n_out n_seq dtype")
+Globals = namedtuple("globals", "n_batch n_x n_in n_hidden n_out n_seq dtype")
 
-@pytest.fixture
-def params():
-    return Params(
+@pytest.fixture(scope="module")
+def globals():
+    return Globals(
         n_batch = 8,
         n_x = 2,
         n_in = 18,
@@ -89,9 +87,9 @@ def params():
     )
 
 # input model
-@pytest.fixture
-def inp(params):
-    return nn.Sequential( nn.Linear(params.n_in ,10), nn.ELU(), nn.Linear(10 ,params.n_in), nn.ELU()).to(params.dtype)
+@pytest.fixture(scope="module")
+def inp(globals):
+    return nn.Sequential( nn.Linear(globals.n_in ,10), nn.ELU(), nn.Linear(10 ,globals.n_in), nn.ELU()).to(globals.dtype)
 
 
 # output model
@@ -104,9 +102,9 @@ class Outp(nn.Sequential):
         logits = super().forward(z)
         return -torch.distributions.Categorical(logits=logits).log_prob(y)
 
-@pytest.fixture
-def outp(params):
-    return Outp(params.n_hidden, params.n_out).to(params.dtype)
+@pytest.fixture(scope="module")
+def outp(globals):
+    return Outp(globals.n_hidden, globals.n_out).to(globals.dtype)
 
 
 # rnn models
@@ -124,26 +122,26 @@ class FancyRNN(nn.Module):
         return z, (h_gru, h_lstm)
 
 
-@pytest.fixture
-def rnn(params):
-    return nn.GRU(params.n_in, params.n_hidden, batch_first=True).to(torch.double)
-@pytest.fixture
-def rnn2(params):
-    return nn.LSTM(params.n_in, params.n_hidden, batch_first=True, num_layers=3).to(torch.double)
-@pytest.fixture
-def rnn3(params):
-    return FancyRNN(params.n_in, params.n_hidden).to(torch.double)
+
+@pytest.fixture(scope="module", params=[1,2,3])
+def rnn(request,globals):
+    if request.param==1:
+        return nn.GRU(globals.n_in, globals.n_hidden, batch_first=True).to(torch.double)
+    if request.param==2:
+        return nn.LSTM(globals.n_in, globals.n_hidden, batch_first=True, num_layers=3).to(torch.double)
+    if request.param==3:
+        return FancyRNN(globals.n_in, globals.n_hidden).to(torch.double)
 
 
-#@pytest.mark.parametrize("rnn",[rnn1,rnn2,rnn3])
+
 @pytest.mark.parametrize("loss_scale",["mean","sum"])
 @pytest.mark.parametrize("n",[1,2,7,10])
-def test_chunked_rnn(params, inp, outp, rnn, n, loss_scale):
+def test_chunked_rnn( globals, inp, outp, rnn, n, loss_scale):
         #print("{} chunks".format(n))
         mods = nn.ModuleList([inp, outp, rnn])
 
-        x = torch.randn(params.n_batch, params.n_seq, params.n_in, dtype=torch.double)
-        y = torch.randint(0, params.n_out, (params.n_batch, params.n_seq))
+        x = torch.randn(globals.n_batch, globals.n_seq, globals.n_in, dtype=torch.double)
+        y = torch.randint(0, globals.n_out, (globals.n_batch, globals.n_seq))
 
         mods.zero_grad()
         z, h = rnn(inp(x), None)
