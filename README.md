@@ -1,8 +1,8 @@
 ### ToDo:
-- variable sequence length
+- ~~variable sequence length~~
 - ~~structured hidden (LSTM, multilayer, mixed RNN)~~
 - make nn.Module classes
 - ~~no_grad computation~~
 - loss aggregation
-- unit tests
+- ~~unit tests~~
 - ~~GPU computation~~

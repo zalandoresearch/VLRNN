@@ -18,7 +18,7 @@ from pytorch_lightning.loggers import WandbLogger
 import wandb
 from torch.utils.data import DataLoader
 
-from chunked_rnn import chunked_rnn
+from block_rnn import block_rnn
 
 from matplotlib.pyplot import *
 

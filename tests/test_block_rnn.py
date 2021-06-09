@@ -1,10 +1,12 @@
 from collections import namedtuple
-import sys
 from typing import NamedTuple
+
+import sys
 sys.path.append(".")
+from utilities import breakup_packed_sequence, combine_packed_sequence
 
 
-import chunked_rnn
+import block_rnn
 
 import torch
 import torch.nn as nn
@@ -12,71 +14,6 @@ from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequenc
 
 
 import pytest
-
-def valid_packed_sequence(x: PackedSequence) -> bool :
-
-    assert isinstance(x, PackedSequence)
-
-    # that whole thing is not empty
-    assert x.data.shape[0] > 0
-
-    # all batch sizes must sum up to the length of all sequences
-    assert x.data.shape[0] == x.batch_sizes.sum()
-
-    # batch sizes must be in descending order
-    assert all([x.batch_sizes[i]>=x.batch_sizes[i+1] for i in range(len(x.batch_sizes)-1)])
-
-    # both index lists have length N
-    N = x.batch_sizes.max()
-    assert N>0
-    rangeN = torch.arange(N)
-    assert torch.equal(x.sorted_indices.sort()[0], rangeN)
-    assert torch.equal(x.unsorted_indices.sort()[0], rangeN)
-
-    # both index lists are inverse to each other
-    assert torch.equal(x.sorted_indices[x.unsorted_indices], rangeN)
-    assert torch.equal(x.unsorted_indices[x.sorted_indices], rangeN)
-
-
-def equal_packed_sequences(x, y):
-
-    assert torch.equal(x.data, y.data)
-    assert torch.equal(x.batch_sizes, y.batch_sizes)
-    assert torch.equal(x.sorted_indices, y.sorted_indices)
-    assert torch.equal(x.unsorted_indices, y.unsorted_indices)
-
-
-@pytest.mark.parametrize("num_channels",[(), (3,), (4,5)])
-@pytest.mark.parametrize("num_chunks",[1,5,10,100])
-def test_chunk_packed_sequence(num_channels, num_chunks):
-    num_batch = 10
-    max_seq_len = 100
-    min_seq_len = 1
-    #num_channels = (3,),
-    #num_chunks = 8 ):
-
-    lens = torch.randint(min_seq_len, max_seq_len+1, (num_batch,)) 
-    x = pack_sequence([torch.randn(l, *num_channels) for l in lens], enforce_sorted=False)
-
-    x_chunk = chunked_rnn.chunk_packed_sequence(x, num_chunks)
-
-    for x_ in x_chunk:
-        valid_packed_sequence(x_)
-
-    x_restore = chunked_rnn.combine_packed_sequence(x_chunk, sorted_indices=x.sorted_indices, unsorted_indices=x.unsorted_indices)
-    equal_packed_sequences(x, x_restore)
-
-
-def test_lens_of_packed_sequence():
-    num_batch = 10
-    max_seq_len = 100
-    min_seq_len = 1
-    num_channels = ()
-    lens = torch.randint(min_seq_len, max_seq_len+1, (num_batch,)) 
-    x = pack_sequence([torch.randn(l,) for l in lens], enforce_sorted=False)
-
-    assert torch.equal(chunked_rnn.lens_of_packed_sequence(x), lens)
-
 
 
 # testing chunked_rnn with non-packed sequences
@@ -166,9 +103,9 @@ def rnn(request,globals):
 def create_sequences(globals):
 
     if globals.var:
-        lens = torch.randint(globals.n_seq//5, globals.n_seq+1, (globals.n_batch,)) 
-        x = pack_sequence([torch.randn(l, globals.n_in, dtype=globals.dtype) for l in lens], enforce_sorted=False)
-        y = pack_sequence([torch.randint(0, globals.n_out, (l,)) for l in lens], enforce_sorted=False)
+        lengths = torch.randint(globals.n_seq//5, globals.n_seq+1, (globals.n_batch,)) 
+        x = pack_sequence([torch.randn(l, globals.n_in, dtype=globals.dtype) for l in lengths], enforce_sorted=False)
+        y = pack_sequence([torch.randint(0, globals.n_out, (l,)) for l in lengths], enforce_sorted=False)
        
     else:
         x = torch.randn(globals.n_batch, globals.n_seq, globals.n_in, dtype=globals.dtype)
@@ -181,7 +118,7 @@ def create_sequences(globals):
 
 @pytest.mark.parametrize("loss_scale",["sum","mean"])
 @pytest.mark.parametrize("n",[1,2,7,10])
-def test_chunked_rnn( globals, inp, outp, rnn, n, loss_scale):
+def test_block_rnn( globals, inp, outp, rnn, n, loss_scale):
         #print("{} chunks".format(n))
         mods = nn.ModuleList([inp, outp, rnn])
 
@@ -207,7 +144,7 @@ def test_chunked_rnn( globals, inp, outp, rnn, n, loss_scale):
         print("loss (standard computation) {:.6f}".format(l_std))
 
         mods.zero_grad()
-        l_chunk = chunked_rnn.chunked_rnn(inp, rnn, outp, x, y, None, n, loss_scale=loss_scale)
+        l_chunk = block_rnn.chunked_rnn(inp, rnn, outp, x, y, None, n, loss_scale=loss_scale)
         g_chunk = [p.grad.clone() for p in mods.parameters()]
         print("loss (chunked computation) {:.6f}".format(l_chunk))
 
@@ -216,3 +153,66 @@ def test_chunked_rnn( globals, inp, outp, rnn, n, loss_scale):
         #print()
 
 
+@pytest.mark.parametrize("loss_scale",["SUM","MEAN"])
+@pytest.mark.parametrize("N",[1,2,7,10])
+def test_BlockRNN( globals, outp, rnn, N, loss_scale):
+
+        mods = nn.ModuleList([outp, rnn])
+
+        x,y = create_sequences(globals)
+        # z, h = rnn(x, None)
+
+        # l_std = outp(z, y)
+        # if globals.var:
+        #     l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
+        #     l_std = l_std.sum(1)
+        #     if loss_scale == "MEAN":
+        #         l_std /= lens
+        # else:
+        #     l_std = l_std.mean(1) if loss_scale == "MEAN" else l_std.sum(1)
+        # l_std = l_std.mean()
+
+        # l_std.backward()
+        # l_std = l_std.item()
+        # g_std = [p.grad.clone() for p in mods.parameters()]
+        # print("loss (standard computation) {:.6f}".format(l_std))
+
+        # mods = nn.ModuleList([outp, rnn])
+ 
+        mods.zero_grad()
+
+        z, h = rnn(x, None)
+
+        l_std = outp(z, y)
+        if globals.var: #'PACKED'
+            l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
+            l_std = l_std.sum(1)
+            if loss_scale == "MEAN":
+                l_std /= lens
+        else:
+            l_std = l_std.mean(1) if loss_scale == "MEAN" else l_std.sum(1)
+        print(l_std)
+        l_std = l_std.sum()
+
+        l_std.backward()
+        l_std = l_std.item()
+        g_std = [p.grad.clone() for p in mods.parameters()]
+        print("loss (standard computation) {:.6f}".format(l_std))
+
+        mods.zero_grad()
+
+        # vlrnn = block_rnn.BlockRNN(rnn, outp, loss_scale)
+        # l_chunk = vlrnn(x, None, y, N)
+        # g_chunk = [p.grad.clone() for p in mods.parameters()]
+        # print("loss (chunked computation) {:.6f}".format(l_chunk))
+        # mods.zero_grad()
+
+        vlrnn = block_rnn.BlockRNN(rnn, outp, loss_scale)
+        l_chunk = vlrnn(x, None, y,  N)
+        g_chunk = [p.grad.clone() for p in mods.parameters()]
+        print("loss (chunked computation) {:.6f}".format(l_chunk))
+        l_chunk = l_chunk.item()
+
+        assert all([torch.allclose(g1, g2) for g1, g2 in zip(g_chunk, g_std )])
+        #print("losses and gradients equal:", good)
+        #print()
