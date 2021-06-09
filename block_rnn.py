@@ -10,100 +10,6 @@ from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequenc
 
 from utilities import BreakUp, Combine, breakup_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_unflatten, sum_of_packed_sequence
 
-
-
-
-def chunked_rnn(inp, rnn, outp, x, y, h0, N, lengths=None, loss_scale="mean"):
-    # channels last:
-    # x is (n_batch, n_seq, n_channels)
-
-    assert loss_scale in ["mean","sum"]
-
-    inp.zero_grad()
-    rnn.zero_grad()
-    outp.zero_grad()
-
-    packed_seq = (isinstance(x, PackedSequence) and isinstance(y, PackedSequence))
-
-    if packed_seq:
-        N_total = len(x.batch_sizes)
-        n_batch = x.batch_sizes[0]
-        x_chunks = breakup_packed_sequence(x, N)
-        y_chunks = breakup_packed_sequence(y, N)
-        if loss_scale=="mean":
-            lengths = lengths_of_packed_sequence(x)
-            lengths_chunks = breakup_packed_sequence(pack_sequence([torch.ones(l)*l for l in lengths], enforce_sorted=False), N)
-
-        assert len(x_chunks) == len(y_chunks)
-    else:
-        n_batch, N_total = x.shape[:2]
-        x_chunks = x.chunk(N, dim=1)
-        y_chunks = y.chunk(N, dim=1)
-
-    N = len(x_chunks) # may be different that requested for packed sequences
-
-    h_chunks = [h0] + [None] * N
-    with torch.no_grad():
-        for n in range(N):
-            x_n = x_chunks[n]
-            h_n = h_chunks[n]
-
-            z, h = rnn(inp(x_n), h_n)
-            h_chunks[n + 1] = h
-
-    #$# loss_chunks = [None] * N
-
-    loss = 0
-    delta_h_n_plus_1 = None
-    for n in reversed(range(N)):
-
-        x_n = x_chunks[n]
-        y_n = y_chunks[n]
-        h_n = h_chunks[n]
-
-        if torch.is_grad_enabled():
-            if h_n is not None:
-                # h_n.requires_grad = True
-                requires_grad(h_n, True)
-
-        z_n, h_n_plus_1 = rnn(inp(x_n), h_n)
-        loss_n = outp(z_n, y_n)
-
-        if packed_seq:
-            if loss_scale == "mean":
-                loss_n = (loss_n.data/lengths_chunks[n].data).sum(0)/n_batch
-            else:
-                loss_n = loss_n.data.sum(0)/n_batch # packed sequences are (total) sequences first dim
-        else:
-            #$# loss_chunks[n] = loss_n.detach()
-            loss_n = loss_n.sum(1).mean(0)
-            if loss_scale == "mean":
-                loss_n = loss_n / N_total
-
-
-        # for a, b in zip(struct_flatten(h_n_plus_1), struct_flatten(h_chunks[n + 1])):
-        #     assert torch.allclose(a, b)
-
-        if torch.is_grad_enabled():
-            if n < N - 1:
-                loss_n.backward(retain_graph=True)
-                h_n_plus_1_ = list(struct_flatten(h_n_plus_1))
-                delta_h_n_plus_1_ = list(struct_flatten(delta_h_n_plus_1))
-
-                torch.autograd.backward(h_n_plus_1_, grad_tensors=delta_h_n_plus_1_)
-            else:
-                loss_n.backward()
-
-            if h_n is not None:
-                delta_h_n_plus_1 = grad_of(h_n)
-            else:
-                delta_h_n_plus_1 = None
-
-        loss = loss + loss_n.detach() #.item()
-
-    return loss #$#, torch.cat(loss_chunks, 1)
-
-
 class SequenceStruct(object):
 
     def __init__(self, struct):
@@ -245,7 +151,6 @@ class BlockRNN(nn.Module, ABC):
             x = x.struct
         if h is not None and isinstance(h, SequenceStruct):
             h = h.struct
-        #print('_call_rnn', x.shape, h.shape if h is not None else None)
         return self.rnn(x, h)
 
     def _call_out(self, z, y):
@@ -253,7 +158,6 @@ class BlockRNN(nn.Module, ABC):
             z = z.struct
         if y is not None and isinstance(y, SequenceStruct):
             y = y.struct
-        #print('_call_out', z.shape, y.shape if y is not None else None)
         return self.out(z, y)
 
 
@@ -277,26 +181,6 @@ class BlockRNN(nn.Module, ABC):
             y_blocks = y.breakup(N)
             assert len(x_blocks) == len(y_blocks)
 
-        # if packed_seq:
-        #     N_total = len(x.batch_sizes)
-        #     x_blocks = breakup_packed_sequence(x, N)
-        #     if not sampling:
-        #         y_blocks = breakup_packed_sequence(y, N)
-        #     else:
-        #         y_blocks = [None]*len(x_blocks)
-
-        #     if self.loss_scaling=="MEAN":
-        #         lengths = lengths_of_packed_sequence(x)
-        #         lengths_blocks = breakup_packed_sequence(pack_sequence([torch.ones(l)*l for l in lengths], enforce_sorted=False), N)
-
-        #     assert len(x_blocks) == len(y_blocks)
-        # else:
-        #     N_total = x.shape[:2]
-        #     x_blocks = x.chunk(N, dim=1)
-        #     if not sampling:
-        #         y_blocks = y.chunk(N, dim=1)
-        #     else:
-        #         y_blocks = [None]*len(x_blocks)
 
         N = len(x_blocks) # may be different than requested for packed sequences
 
@@ -340,22 +224,6 @@ class BlockRNN(nn.Module, ABC):
                 loss_n = loss_n.seq_sum() # leading to (unpacked) sequences of lengths 1
                 loss_n = loss_n.sum() # now we have a scalar
             
-
-            # if packed_seq:
-            #     if self.loss_scaling == "MEAN":
-            #         loss_n = (loss_n.data/lengths_blocks[n].data).sum(0)/n_batch
-            #     else:
-            #         loss_n = loss_n.data.sum(0)/n_batch # packed sequences are (total) sequences first dim
-            # else:
-            #     #$# loss_blocks[n] = loss_n.detach()
-            #     loss_n = loss_n.sum(1).mean(0)
-            #     if self.loss_scaling == "MEAN":
-            #         loss_n = loss_n / N_total
-
-
-            # for a, b in zip(struct_flatten(h_n_plus_1), struct_flatten(h_blocks[n + 1])):
-            #     assert torch.allclose(a, b)
-
             if torch.is_grad_enabled():
                 if n < N - 1:
                     loss_n.backward(retain_graph=True)
