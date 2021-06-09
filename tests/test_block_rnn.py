@@ -114,75 +114,19 @@ def create_sequences(globals):
     return x,y    
 
 
-
-
-@pytest.mark.parametrize("loss_scale",["sum","mean"])
-@pytest.mark.parametrize("n",[1,2,7,10])
-def test_block_rnn( globals, inp, outp, rnn, n, loss_scale):
-        #print("{} chunks".format(n))
-        mods = nn.ModuleList([inp, outp, rnn])
-
-        x,y = create_sequences(globals)
-
-        mods.zero_grad()
-        x_ = inp(x)
-        z, h = rnn(x_, None)
-
-        l_std = outp(z, y)
-        if globals.var:
-            l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
-            l_std = l_std.sum(1)
-            if loss_scale == "mean":
-                l_std /= lens
-        else:
-            l_std = l_std.mean(1) if loss_scale == "mean" else l_std.sum(1)
-        l_std = l_std.mean()
-
-        l_std.backward()
-        l_std = l_std.item()
-        g_std = [p.grad.clone() for p in mods.parameters()]
-        print("loss (standard computation) {:.6f}".format(l_std))
-
-        mods.zero_grad()
-        l_chunk = block_rnn.chunked_rnn(inp, rnn, outp, x, y, None, n, loss_scale=loss_scale)
-        g_chunk = [p.grad.clone() for p in mods.parameters()]
-        print("loss (chunked computation) {:.6f}".format(l_chunk))
-
-        assert all([torch.allclose(g1, g2) for g1, g2 in zip(g_chunk, g_std )])
-        #print("losses and gradients equal:", good)
-        #print()
-
-
 @pytest.mark.parametrize("loss_scale",["SUM","MEAN"])
 @pytest.mark.parametrize("N",[1,2,7,10])
 def test_BlockRNN( globals, outp, rnn, N, loss_scale):
 
         mods = nn.ModuleList([outp, rnn])
-
         x,y = create_sequences(globals)
-        # z, h = rnn(x, None)
-
-        # l_std = outp(z, y)
-        # if globals.var:
-        #     l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
-        #     l_std = l_std.sum(1)
-        #     if loss_scale == "MEAN":
-        #         l_std /= lens
-        # else:
-        #     l_std = l_std.mean(1) if loss_scale == "MEAN" else l_std.sum(1)
-        # l_std = l_std.mean()
-
-        # l_std.backward()
-        # l_std = l_std.item()
-        # g_std = [p.grad.clone() for p in mods.parameters()]
-        # print("loss (standard computation) {:.6f}".format(l_std))
-
-        # mods = nn.ModuleList([outp, rnn])
  
+        #################################################
+        # running as plain RNN
+        #################################################
+        
         mods.zero_grad()
-
         z, h = rnn(x, None)
-
         l_std = outp(z, y)
         if globals.var: #'PACKED'
             l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
@@ -199,14 +143,12 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         g_std = [p.grad.clone() for p in mods.parameters()]
         print("loss (standard computation) {:.6f}".format(l_std))
 
+
+        #################################################
+        # running as BlockRNN
+        #################################################
+
         mods.zero_grad()
-
-        # vlrnn = block_rnn.BlockRNN(rnn, outp, loss_scale)
-        # l_chunk = vlrnn(x, None, y, N)
-        # g_chunk = [p.grad.clone() for p in mods.parameters()]
-        # print("loss (chunked computation) {:.6f}".format(l_chunk))
-        # mods.zero_grad()
-
         vlrnn = block_rnn.BlockRNN(rnn, outp, loss_scale)
         l_chunk = vlrnn(x, None, y,  N)
         g_chunk = [p.grad.clone() for p in mods.parameters()]

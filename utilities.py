@@ -3,7 +3,6 @@ import torch
 from torch.nn.utils.rnn import PackedSequence, pad_packed_sequence
 
 
-
 def add_vector( x: torch.Tensor, v: torch.Tensor, dim: int) -> torch.Tensor:
     sh = [1]*x.ndim
     sh[dim] = len(v)
@@ -14,6 +13,7 @@ def div_vector( x: torch.Tensor, v: torch.Tensor, dim: int) -> torch.Tensor:
     sh = [1]*x.ndim
     sh[dim] = len(v)
     return x / v.view(*sh)
+
 
 def mul_vector( x: torch.Tensor, v: torch.Tensor, dim: int) -> torch.Tensor:
     sh = [1]*x.ndim
