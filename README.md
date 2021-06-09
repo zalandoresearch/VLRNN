@@ -3,6 +3,6 @@
 - ~~structured hidden (LSTM, multilayer, mixed RNN)~~
 - make nn.Module classes
 - ~~no_grad computation~~
-- loss aggregation
+- ~~loss aggregation~~
 - ~~unit tests~~
 - ~~GPU computation~~

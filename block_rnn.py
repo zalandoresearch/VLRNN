@@ -148,12 +148,6 @@ class SequenceStruct(object):
         return torch.stack(flat,0).sum()
 
 
-
-
-class BlockRNNOutput(nn.Module, ABC):
-    pass
-
-
 class BlockRNN(nn.Module, ABC):
 
     def __init__(self, rnn: nn.Module, out: BlockRNNOutput, loss_scaling: str, N: Optional[int]=None):
