@@ -1,9 +1,9 @@
 from collections import namedtuple
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 import sys
 sys.path.append(".")
-from utilities import BreakUp, Combine, breakup_packed_sequence, combine_packed_sequence, struct_equal
+from utilities import  breakup_packed_sequence, combine_packed_sequence, struct_equal
 
 
 import block_rnn
@@ -108,27 +108,4 @@ zp = pack_sequence([torch.randn(10), torch.randn(8), torch.randn(5)])
 def test_struct_equal(a, b, f):
     assert struct_equal(a, b) == f
     assert struct_equal(b, a) == f
-
-
-
-
-x = torch.arange(7*10).view(7,10)
-y = torch.arange(10*10).view(10,10)
-z = torch.randn(1,10)
-xp = pack_sequence([torch.arange(8), torch.arange(10), torch.arange(5)], enforce_sorted=False)
-yp = pack_sequence([torch.arange(8), torch.arange(10), torch.arange(5)], enforce_sorted=False)
-zp = pack_sequence([torch.randn(8), torch.randn(10), torch.randn(5)], enforce_sorted=False)
-
-
-@pytest.mark.parametrize("N",[1,3,10,20])
-@pytest.mark.parametrize("a, kwargs",[
-    (x,                         {}),    
-    ([x,(y,z)],                 {}),    
-    ([x,{'foo':y, 'bar':z}],    {}),    
-    (xp,                        {'sorted_indices':xp.sorted_indices, 'unsorted_indices':xp.unsorted_indices}),    
-    ([xp,(yp,zp)],              {'sorted_indices':xp.sorted_indices, 'unsorted_indices':xp.unsorted_indices}),    
-    ([xp,{'foo':yp, 'bar':zp}], {'sorted_indices':xp.sorted_indices, 'unsorted_indices':xp.unsorted_indices}),    
-])
-def test_breakup_combine(a,N, kwargs):
-    b = Combine(**kwargs)(BreakUp(N)(a))
-    assert struct_equal(a,b)
+    

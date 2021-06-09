@@ -33,9 +33,13 @@ l = torch.tensor([50,100,20])
 struct_lambdas = [
     lambda x,y,z: (x,                       [x]),
     lambda x,y,z: ([x, y, z],               [x, y, z]),
+]
+
+struct_lambdas_bad = [
     lambda x,y,z: ((x, [y,z]),              [x, y, z]),
     lambda x,y,z: ({'x':x, 'y':y, 'z':[z]}, [x, y, z]),    
     lambda x,y,z: ([x, y, [z]],             [x, y, z]),
+    lambda x,y,z: ([x, y, 'z'],             [x, y]),
 ]
 
 
@@ -91,6 +95,9 @@ def make_struct(request):
 def make_other_struct(request):
     return request.param
 
+@pytest.fixture(scope='module', params=struct_lambdas_bad)
+def make_struct_bad(request):
+    return request.param
 
 def test_struct_equal(request, seq, make_struct, make_other_struct):
     x,y,z = seq
@@ -127,7 +134,14 @@ def test_SequenceStruct_validate(valid_seq, make_struct):
     s.validate()
 
 
-def test_SequenceStruct_validate_fail(mixed_seq, make_struct):
+def test_SequenceStruct_validate_fail1(valid_seq, make_struct_bad):
+    x,y,z = valid_seq
+
+    with pytest.raises(Exception):       
+        s = SequenceStruct(make_struct_bad(x,y,z)[0])
+    
+
+def test_SequenceStruct_validate_fail2(mixed_seq, make_struct):
     x,y,z = mixed_seq
     
     s, s_flat = make_struct(x,y,z)

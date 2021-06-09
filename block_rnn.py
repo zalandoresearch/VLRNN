@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import sys
 
@@ -8,10 +8,15 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
 
-from utilities import BreakUp, Combine, breakup_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_unflatten, sum_of_packed_sequence
+from utilities import breakup_packed_sequence, combine_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_unflatten, sum_of_packed_sequence
 
 class SequenceStruct(object):
+    """A conatiner class that either represents a sequence container or a list of sequence containers. Sequence containers can be
+    * torch.Tensor for regular, equally sized, batch-first sequences  (num_batch, len_seq, channle_1, channel_2, ...)
+    * torch.nn.utils.rnn.PackedSequence
 
+    In a list, all containers ust be of same type and structure regarding batch size, sequence length(s).
+    """
     def __init__(self, struct):
         if isinstance( struct_equal, SequenceStruct):
             self.struct = struct.struct
@@ -46,15 +51,12 @@ class SequenceStruct(object):
             self.assert_and_assign('unsorted_indices', x.unsorted_indices)
 
 
-        elif isinstance(x, tuple) or isinstance(x, list):
+        elif isinstance(x, list):
+            assert root # no lists of lists allowed!
             for xi in x:
                 self.validate(xi, root=False)
-
-        elif isinstance(x, dict):
-            for xi in x.values():
-                self.validate(xi, root=False)
         else:
-            raise ValueError(f'unknown type {type(x)}')
+            raise ValueError(f'SequenceStruct cannot contain objets of type {type(x)}')
 
 
     def assert_and_assign(self, name, new_value):
@@ -74,15 +76,37 @@ class SequenceStruct(object):
         return torch.equal( self.seq_lengths, y.seq_lengths)
 
 
+    @staticmethod
+    def breakup_container(x: Union[torch.Tensor,PackedSequence], N) -> List[Union[torch.Tensor,PackedSequence]]:
+        if isinstance(x, torch.Tensor):
+            return list(x.chunk( N, dim=1))
+
+        if isinstance(x, PackedSequence):
+            return breakup_packed_sequence(x, N)
+
+
     def breakup(self, N: int) -> List[SequenceStruct]:
-        br = BreakUp(N)
-        return [SequenceStruct(s) for s in br(self.struct)]
+        if isinstance( self.struct, list):
+            return [SequenceStruct(list(s)) for s in zip(*(self.breakup_container(x, N) for x in self.struct))]
+        else:
+            return [SequenceStruct(x) for x in self.breakup_container(self.struct, N)]
 
 
     @staticmethod
-    def combine(x: List[SequenceStruct], **kwargs) -> SequenceStruct:
-        cm = Combine(**kwargs)
-        return SequenceStruct( cm([xi.struct for xi in x]))
+    def combine_container(x: List[Union[torch.Tensor,PackedSequence]], **kwargs) -> Union[torch.Tensor,PackedSequence]:
+        if isinstance(x[0], torch.Tensor):
+            return torch.cat(x, dim=1)
+    
+        if isinstance(x[0], PackedSequence):
+            return combine_packed_sequence(x, **kwargs)
+
+
+    @staticmethod
+    def combine(s: List[SequenceStruct], **kwargs) -> SequenceStruct:
+        if isinstance( s[0].struct, list):
+            return SequenceStruct([SequenceStruct.combine_container(list(x), **kwargs) for x in zip(*[si.struct for si in s])])
+        else:
+            return SequenceStruct( SequenceStruct.combine_container( [si.struct for si in s], **kwargs))
         
 
     def seq_mean(self, x=None, root=True) -> SequenceStruct:
@@ -108,7 +132,6 @@ class SequenceStruct(object):
                 
         flat = (aggr(f) for f in struct_flatten(self.struct))
         return SequenceStruct(struct_unflatten(flat, self.struct))
-
 
     def mean(self):
         if self.container_type is torch.Tensor:
