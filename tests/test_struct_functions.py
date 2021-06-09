@@ -3,7 +3,7 @@ from typing import NamedTuple, Sequence
 
 import sys
 sys.path.append(".")
-from utilities import struct_flatten, struct_unflatten, struct_equal, lengths_of_packed_sequence
+from utilities import div_vector, struct_flatten, struct_unflatten, struct_equal, lengths_of_packed_sequence
 from block_rnn import SequenceStruct
 
 import pytest
@@ -29,6 +29,14 @@ z3=torch.randn(20)
 
 l = torch.tensor([50,100,20])    
 
+
+@pytest.fixture(scope='module', params=[
+    torch.device('cpu'), 
+    pytest.param(torch.device('cuda'), marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"))], 
+    ids=['CPU','CUDA'])
+def device(request):
+    return request.param
+
 # functions that create a complicated structures, together with the corresponding flat (list) structure
 struct_lambdas = [
     lambda x,y,z: (x,                       [x]),
@@ -43,48 +51,48 @@ struct_lambdas_bad = [
 ]
 
 
-def make_seq(mode):
+def make_seq(mode, device):
     xp = pack_sequence([x1,x2,x3], enforce_sorted=False)
     yp = pack_sequence([y1,y2,y3], enforce_sorted=False)
     zp = pack_sequence([z1,z2,z3], enforce_sorted=False)
 
     if mode=='PACKED':
-        return xp, yp, zp
+        return xp.to(device), yp.to(device), zp.to(device)
     x = pad_packed_sequence(xp)[0].transpose(0,1)
     y = pad_packed_sequence(yp)[0].transpose(0,1)
     z = pad_packed_sequence(zp)[0].transpose(0,1)
     if mode=='FIXED':
-        return x,y,z
+        return x.to(device),y.to(device),z.to(device)
 
     # MIXED
-    return x, y, zp
+    return x.to(device), y.to(device), zp.to(device)
 
 @pytest.fixture(scope='module', params=['PACKED', 'FIXED','MIXED'])
-def seq(request):
-    return make_seq(request.param)
+def seq(request, device):
+    return make_seq(request.param, device)
     
 @pytest.fixture(scope='module', params=['PACKED', 'FIXED'])
-def valid_seq(request):
-    return make_seq(request.param)
+def valid_seq(request, device):
+    return make_seq(request.param, device)
     
 @pytest.fixture(scope='module', params=['PACKED'])
-def packed_seq(request):
-    return make_seq(request.param)
+def packed_seq(request, device):
+    return make_seq(request.param, device)
     
 @pytest.fixture(scope='module', params=['MIXED'])
-def mixed_seq(request):
-    return make_seq(request.param)
+def mixed_seq(request, device):
+    return make_seq(request.param, device)
     
 @pytest.fixture(scope='module', params=['FIXED'])
-def fixed_seq(request):
-    return make_seq(request.param)
+def fixed_seq(request, device):
+    return make_seq(request.param, device)
     
 
 def test_legth_of_packed_sequence(request, packed_seq):
     x,y,z = packed_seq
-    assert torch.equal( lengths_of_packed_sequence(x), l)
-    assert torch.equal( lengths_of_packed_sequence(y), l)
-    assert torch.equal( lengths_of_packed_sequence(z), l)
+    assert torch.equal( lengths_of_packed_sequence(x), l.to(x.data.device))
+    assert torch.equal( lengths_of_packed_sequence(y), l.to(y.data.device))
+    assert torch.equal( lengths_of_packed_sequence(z), l.to(z.data.device))
 
 
 @pytest.fixture(scope='module', params=struct_lambdas)
@@ -175,7 +183,7 @@ def test_SequencesStruct_stats(valid_seq, make_struct, method):
         elif isinstance(x, PackedSequence):
             x,l = pad_packed_sequence(x)
             if method=='MEAN':
-                return (x.sum(0)/l.view((-1,)+(1,)*(x.ndim-2))).unsqueeze(1)
+                return div_vector(x.sum(0), l.to(x.device), dim=0).unsqueeze(1)
             else:
                 return x.sum(0).unsqueeze(1)
 

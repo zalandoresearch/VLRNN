@@ -16,11 +16,19 @@ from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequenc
 import pytest
 
 
+@pytest.fixture(scope='module', params=[
+    torch.device('cpu'), 
+    pytest.param(torch.device('cuda'), marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"))], 
+    ids=['CPU','CUDA'])
+def device(request):
+    return request.param
+
+
 # testing chunked_rnn with non-packed sequences
-Globals = namedtuple("globals", "n_batch n_x n_in n_hidden n_out n_seq dtype var")
+Globals = namedtuple("globals", "n_batch n_x n_in n_hidden n_out n_seq dtype device var")
 
 @pytest.fixture(scope="module", params=[True, False], ids=["PACKED", "FIXED"])
-def globals(request):
+def globals(request, device):
     return Globals(
         n_batch = 8,
         n_x = 2,
@@ -29,6 +37,7 @@ def globals(request):
         n_out = 5,
         n_seq = 100,
         dtype = torch.double,
+        device = device,
         var = request.param
     )
 
@@ -46,7 +55,7 @@ class Inp(nn.Sequential):
 
 @pytest.fixture(scope="module")
 def inp(globals):
-    return Inp(globals.n_in).to(globals.dtype)
+    return Inp(globals.n_in).to(globals.device, dtype=globals.dtype)
 
 
 # output model
@@ -69,7 +78,7 @@ class Outp(nn.Sequential):
 
 @pytest.fixture(scope="module")
 def outp(globals):
-    return Outp(globals.n_hidden, globals.n_out).to(globals.dtype)
+    return Outp(globals.n_hidden, globals.n_out).to(globals.device, dtype=globals.dtype)
 
 
 # rnn models
@@ -91,11 +100,11 @@ class FancyRNN(nn.Module):
 @pytest.fixture(scope="module", params=['GRU','LSTM','FANCY'])
 def rnn(request,globals):
     if request.param=='GRU':
-        return nn.GRU(globals.n_in, globals.n_hidden, batch_first=True).to(globals.dtype)
+        return nn.GRU(globals.n_in, globals.n_hidden, batch_first=True).to(globals.device, dtype=globals.dtype)
     if request.param=='LSTM':
-        return nn.LSTM(globals.n_in, globals.n_hidden, batch_first=True, num_layers=3).to(globals.dtype)
+        return nn.LSTM(globals.n_in, globals.n_hidden, batch_first=True, num_layers=3).to(globals.device, dtype=globals.dtype)
     if request.param=='FANCY':
-        return FancyRNN(globals.n_in, globals.n_hidden).to(globals.dtype)
+        return FancyRNN(globals.n_in, globals.n_hidden).to(globals.device, dtype=globals.dtype)
 
 
 
@@ -104,12 +113,12 @@ def create_sequences(globals):
 
     if globals.var:
         lengths = torch.randint(globals.n_seq//5, globals.n_seq+1, (globals.n_batch,)) 
-        x = pack_sequence([torch.randn(l, globals.n_in, dtype=globals.dtype) for l in lengths], enforce_sorted=False)
-        y = pack_sequence([torch.randint(0, globals.n_out, (l,)) for l in lengths], enforce_sorted=False)
+        x = pack_sequence([torch.randn(l, globals.n_in, dtype=globals.dtype, device=globals.device) for l in lengths], enforce_sorted=False)
+        y = pack_sequence([torch.randint(0, globals.n_out, (l,), device=globals.device) for l in lengths], enforce_sorted=False)
        
     else:
-        x = torch.randn(globals.n_batch, globals.n_seq, globals.n_in, dtype=globals.dtype)
-        y = torch.randint(0, globals.n_out, (globals.n_batch, globals.n_seq))
+        x = torch.randn(globals.n_batch, globals.n_seq, globals.n_in, dtype=globals.dtype, device=globals.device)
+        y = torch.randint(0, globals.n_out, (globals.n_batch, globals.n_seq), device=globals.device)
 
     return x,y    
 
@@ -132,7 +141,7 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
             l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
             l_std = l_std.sum(1)
             if loss_scale == "MEAN":
-                l_std /= lens
+                l_std /= lens.to(globals.device)
         else:
             l_std = l_std.mean(1) if loss_scale == "MEAN" else l_std.sum(1)
         print(l_std)

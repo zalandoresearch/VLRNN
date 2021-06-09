@@ -118,7 +118,7 @@ def breakup_packed_sequence( x: PackedSequence, N) -> List[PackedSequence]:
     x_out = []
     def append(last_i, i, last_j, j):
             #print(last_i,i, last_j, j)
-            idxs = torch.arange(x.batch_sizes[last_i])
+            idxs = torch.arange(x.batch_sizes[last_i], device=x.data.device)
             x_out.append( PackedSequence(
                 data = x.data[last_j:j],
                 batch_sizes = x.batch_sizes[last_i:i],
@@ -177,7 +177,7 @@ def combine_packed_sequence(x_chunk, sorted_indices=None, unsorted_indices=None)
 def mean_of_packed_sequence(x: PackedSequence, keepdim: bool = False) -> torch.Tensor:
     x_, l = pad_packed_sequence(x)
     x_ = x_.sum(0)
-    x_ = div_vector(x_, l, dim=0)
+    x_ = div_vector(x_, l.to(x_.device), dim=0)
     if keepdim:
         x_ = x_.unsqueeze(1)
     return x_
@@ -193,7 +193,7 @@ def sum_of_packed_sequence(x: PackedSequence, keepdim: bool = False) -> torch.Te
 
 def lengths_of_packed_sequence(x: PackedSequence) -> torch.Tensor:
     n_batch = x.batch_sizes[0]
-    lengths = (x.batch_sizes.unsqueeze(0)>torch.arange(n_batch).unsqueeze(1)).sum(1)
+    lengths = (x.batch_sizes.unsqueeze(0)>torch.arange(n_batch).unsqueeze(1)).sum(1).to(x.data.device)
     return lengths[x.unsorted_indices]
 
 

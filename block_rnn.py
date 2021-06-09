@@ -38,10 +38,10 @@ class SequenceStruct(object):
         if isinstance(x, torch.Tensor):
             # print(x.shape)
             self.assert_and_assign('container_type', torch.Tensor)
-            self.assert_and_assign('seq_lengths', torch.full((x.shape[0],), x.shape[1], dtype=torch.long) )
+            self.assert_and_assign('seq_lengths', torch.full((x.shape[0],), x.shape[1], dtype=torch.long, device=x.device))
             self.assert_and_assign('num_seq', x.shape[0]) 
-            self.assert_and_assign('sorted_indices', torch.arange(x.shape[0]))
-            self.assert_and_assign('unsorted_indices', torch.arange(x.shape[0]))
+            self.assert_and_assign('sorted_indices', torch.arange(x.shape[0], device=x.device))
+            self.assert_and_assign('unsorted_indices', torch.arange(x.shape[0], device=x.device))
 
         elif isinstance(x, PackedSequence):
             self.assert_and_assign('container_type', PackedSequence)
