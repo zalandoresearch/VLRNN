@@ -118,7 +118,7 @@ def breakup_packed_sequence( x: PackedSequence, N) -> List[PackedSequence]:
     x_out = []
     def append(last_i, i, last_j, j):
             #print(last_i,i, last_j, j)
-            idxs = torch.arange(x.batch_sizes[last_i])
+            idxs = torch.arange(x.batch_sizes[last_i], device=x.data.device)
             x_out.append( PackedSequence(
                 data = x.data[last_j:j],
                 batch_sizes = x.batch_sizes[last_i:i],
@@ -177,7 +177,7 @@ def combine_packed_sequence(x_chunk, sorted_indices=None, unsorted_indices=None)
 def mean_of_packed_sequence(x: PackedSequence, keepdim: bool = False) -> torch.Tensor:
     x_, l = pad_packed_sequence(x)
     x_ = x_.sum(0)
-    x_ = div_vector(x_, l, dim=0)
+    x_ = div_vector(x_, l.to(x_.device), dim=0)
     if keepdim:
         x_ = x_.unsqueeze(1)
     return x_
@@ -193,7 +193,7 @@ def sum_of_packed_sequence(x: PackedSequence, keepdim: bool = False) -> torch.Te
 
 def lengths_of_packed_sequence(x: PackedSequence) -> torch.Tensor:
     n_batch = x.batch_sizes[0]
-    lengths = (x.batch_sizes.unsqueeze(0)>torch.arange(n_batch).unsqueeze(1)).sum(1)
+    lengths = (x.batch_sizes.unsqueeze(0)>torch.arange(n_batch).unsqueeze(1)).sum(1).to(x.data.device)
     return lengths[x.unsorted_indices]
 
 
@@ -205,60 +205,60 @@ def chunk_lengths(chunks: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
     return lengths
 
 
-class BreakUp(object):
+# class BreakUp(object):
 
-    def __init__(self, N):
-        self.N = N
-        self.datatype = None 
+#     def __init__(self, N):
+#         self.N = N
+#         self.datatype = None 
 
-    def __call__(self, x):
+#     def __call__(self, x):
 
-        if isinstance(x, torch.Tensor):
-            assert self.datatype in [None, torch.Tensor]
-            self.datatype = torch.Tensor
-            return list(x.chunk( self.N, dim=1))
+#         if isinstance(x, torch.Tensor):
+#             assert self.datatype in [None, torch.Tensor]
+#             self.datatype = torch.Tensor
+#             return list(x.chunk( self.N, dim=1))
 
-        if isinstance(x, PackedSequence):
-            assert self.datatype in [None, PackedSequence]
-            self.datatype = PackedSequence
-            return breakup_packed_sequence(x, self.N)
+#         if isinstance(x, PackedSequence):
+#             assert self.datatype in [None, PackedSequence]
+#             self.datatype = PackedSequence
+#             return breakup_packed_sequence(x, self.N)
 
-        if isinstance(x, tuple):
-            return list( zip( *(self.__call__(xi) for xi in x)) )
+#         if isinstance(x, tuple):
+#             return list( zip( *(self.__call__(xi) for xi in x)) )
 
-        if isinstance(x, list):
-            return list( list(block) for block in zip( *(self.__call__(xi) for xi in x)) )
+#         if isinstance(x, list):
+#             return list( list(block) for block in zip( *(self.__call__(xi) for xi in x)) )
 
-        if isinstance(x, dict):
-            return list( dict(zip(x.keys(),block)) for block in zip( *(self.__call__(xv) for xv in x.values())) )
+#         if isinstance(x, dict):
+#             return list( dict(zip(x.keys(),block)) for block in zip( *(self.__call__(xv) for xv in x.values())) )
 
-        raise ValueError(f'unknown type {type(x)}')
+#         raise ValueError(f'unknown type {type(x)}')
 
-class Combine(object):
+# class Combine(object):
 
-    def __init__(self, **kwargs):
-        self.N = None
-        self.datatype = None 
-        self.kwargs = kwargs
+#     def __init__(self, **kwargs):
+#         self.N = None
+#         self.datatype = None 
+#         self.kwargs = kwargs
 
-    def __call__(self, x):
-        assert isinstance(x,list)
+#     def __call__(self, x):
+#         assert isinstance(x,list)
 
-        #print(x)
-        assert self.N is None or len(x)==self.N
-        self.N = len(x)
+#         #print(x)
+#         assert self.N is None or len(x)==self.N
+#         self.N = len(x)
 
-        if isinstance(x[0], torch.Tensor):
-            return torch.cat(x, dim=1)
+#         if isinstance(x[0], torch.Tensor):
+#             return torch.cat(x, dim=1)
     
-        if isinstance(x[0], PackedSequence):
-            return combine_packed_sequence(x, **self.kwargs)
+#         if isinstance(x[0], PackedSequence):
+#             return combine_packed_sequence(x, **self.kwargs)
     
-        if isinstance(x[0], tuple):
-            return tuple(self.__call__(list(xi)) for xi in zip(*x))
+#         if isinstance(x[0], tuple):
+#             return tuple(self.__call__(list(xi)) for xi in zip(*x))
 
-        if isinstance(x[0], list):
-            return list(self.__call__(list(xi)) for xi in zip(*x))
+#         if isinstance(x[0], list):
+#             return list(self.__call__(list(xi)) for xi in zip(*x))
 
-        if isinstance(x[0], dict):     
-            return dict(zip(x[0].keys(), tuple(self.__call__(list(xi)) for xi in zip(*(xj.values() for xj in x)))))
+#         if isinstance(x[0], dict):     
+#             return dict(zip(x[0].keys(), tuple(self.__call__(list(xi)) for xi in zip(*(xj.values() for xj in x)))))

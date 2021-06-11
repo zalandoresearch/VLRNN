@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import sys
 
@@ -8,10 +8,15 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
 
-from utilities import BreakUp, Combine, breakup_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_unflatten, sum_of_packed_sequence
+from .utilities import breakup_packed_sequence, combine_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_unflatten, sum_of_packed_sequence
 
 class SequenceStruct(object):
+    """A conatiner class that either represents a sequence container or a list of sequence containers. Sequence containers can be
+    * torch.Tensor for regular, equally sized, batch-first sequences  (num_batch, len_seq, channle_1, channel_2, ...)
+    * torch.nn.utils.rnn.PackedSequence
 
+    In a list, all containers ust be of same type and structure regarding batch size, sequence length(s).
+    """
     def __init__(self, struct):
         if isinstance( struct_equal, SequenceStruct):
             self.struct = struct.struct
@@ -33,10 +38,10 @@ class SequenceStruct(object):
         if isinstance(x, torch.Tensor):
             # print(x.shape)
             self.assert_and_assign('container_type', torch.Tensor)
-            self.assert_and_assign('seq_lengths', torch.full((x.shape[0],), x.shape[1], dtype=torch.long) )
+            self.assert_and_assign('seq_lengths', torch.full((x.shape[0],), x.shape[1], dtype=torch.long, device=x.device))
             self.assert_and_assign('num_seq', x.shape[0]) 
-            self.assert_and_assign('sorted_indices', torch.arange(x.shape[0]))
-            self.assert_and_assign('unsorted_indices', torch.arange(x.shape[0]))
+            self.assert_and_assign('sorted_indices', torch.arange(x.shape[0], device=x.device))
+            self.assert_and_assign('unsorted_indices', torch.arange(x.shape[0], device=x.device))
 
         elif isinstance(x, PackedSequence):
             self.assert_and_assign('container_type', PackedSequence)
@@ -46,15 +51,12 @@ class SequenceStruct(object):
             self.assert_and_assign('unsorted_indices', x.unsorted_indices)
 
 
-        elif isinstance(x, tuple) or isinstance(x, list):
+        elif isinstance(x, list):
+            assert root # no lists of lists allowed!
             for xi in x:
                 self.validate(xi, root=False)
-
-        elif isinstance(x, dict):
-            for xi in x.values():
-                self.validate(xi, root=False)
         else:
-            raise ValueError(f'unknown type {type(x)}')
+            raise ValueError(f'SequenceStruct cannot contain objets of type {type(x)}')
 
 
     def assert_and_assign(self, name, new_value):
@@ -74,15 +76,37 @@ class SequenceStruct(object):
         return torch.equal( self.seq_lengths, y.seq_lengths)
 
 
+    @staticmethod
+    def breakup_container(x: Union[torch.Tensor,PackedSequence], N) -> List[Union[torch.Tensor,PackedSequence]]:
+        if isinstance(x, torch.Tensor):
+            return list(x.chunk( N, dim=1))
+
+        if isinstance(x, PackedSequence):
+            return breakup_packed_sequence(x, N)
+
+
     def breakup(self, N: int) -> List[SequenceStruct]:
-        br = BreakUp(N)
-        return [SequenceStruct(s) for s in br(self.struct)]
+        if isinstance( self.struct, list):
+            return [SequenceStruct(list(s)) for s in zip(*(self.breakup_container(x, N) for x in self.struct))]
+        else:
+            return [SequenceStruct(x) for x in self.breakup_container(self.struct, N)]
 
 
     @staticmethod
-    def combine(x: List[SequenceStruct], **kwargs) -> SequenceStruct:
-        cm = Combine(**kwargs)
-        return SequenceStruct( cm([xi.struct for xi in x]))
+    def combine_container(x: List[Union[torch.Tensor,PackedSequence]], **kwargs) -> Union[torch.Tensor,PackedSequence]:
+        if isinstance(x[0], torch.Tensor):
+            return torch.cat(x, dim=1)
+    
+        if isinstance(x[0], PackedSequence):
+            return combine_packed_sequence(x, **kwargs)
+
+
+    @staticmethod
+    def combine(s: List[SequenceStruct], **kwargs) -> SequenceStruct:
+        if isinstance( s[0].struct, list):
+            return SequenceStruct([SequenceStruct.combine_container(list(x), **kwargs) for x in zip(*[si.struct for si in s])])
+        else:
+            return SequenceStruct( SequenceStruct.combine_container( [si.struct for si in s], **kwargs))
         
 
     def seq_mean(self, x=None, root=True) -> SequenceStruct:
@@ -109,7 +133,6 @@ class SequenceStruct(object):
         flat = (aggr(f) for f in struct_flatten(self.struct))
         return SequenceStruct(struct_unflatten(flat, self.struct))
 
-
     def mean(self):
         if self.container_type is torch.Tensor:
             flat = [f.mean(1).flatten() for f in struct_flatten(self.struct)]
@@ -124,16 +147,18 @@ class SequenceStruct(object):
             flat = [sum_of_packed_sequence(f, keepdim=True).sum() for f in struct_flatten(self.struct)]
         return torch.stack(flat,0).sum()
 
-
-
-
-class BlockRNNOutput(nn.Module, ABC):
-    pass
-
-
+    def batch_size(self):
+        x = next(struct_flatten(self.struct))
+        if isinstance(x, torch.Tensor):
+            return x.shape[0]
+        elif isinstance(x, PackedSequence):
+            return x.batch_sizes[0]
+        else:
+            raise ValueError(f"type {type(x)} cannot occur in SequenceStruct")
+ 
 class BlockRNN(nn.Module, ABC):
 
-    def __init__(self, rnn: nn.Module, out: BlockRNNOutput, loss_scaling: str, N: Optional[int]=None):
+    def __init__(self, rnn: nn.Module, out: nn.Module, loss_scaling: str, N: Optional[int]=None):
         
         super().__init__()
         assert loss_scaling in ['MEAN','SUM']
@@ -143,8 +168,8 @@ class BlockRNN(nn.Module, ABC):
         self.N = N
 
     def zero_grad(self):
-        self.rnn.zero_grad
-        self.out.zero_grad
+        self.rnn.zero_grad()
+        self.out.zero_grad()
 
     def _call_rnn(self, x, h):
         if isinstance(x, SequenceStruct):
@@ -153,7 +178,7 @@ class BlockRNN(nn.Module, ABC):
             h = h.struct
         return self.rnn(x, h)
 
-    def _call_out(self, z, y):
+    def _call_out(self, z, y=None):
         if isinstance(z, SequenceStruct):
             z = z.struct
         if y is not None and isinstance(y, SequenceStruct):
@@ -175,11 +200,15 @@ class BlockRNN(nn.Module, ABC):
             N = self.N
         assert N is not None and N>0
 
+        n_batch = x.batch_size()
+        assert n_batch > 0 
 
         x_blocks = x.breakup(N)
         if not sampling:
             y_blocks = y.breakup(N)
             assert len(x_blocks) == len(y_blocks)
+        else:
+            y_blocks = [None] * N
 
 
         N = len(x_blocks) # may be different than requested for packed sequences
@@ -219,7 +248,7 @@ class BlockRNN(nn.Module, ABC):
             if self.loss_scaling == "MEAN":
                 scale = x.seq_lengths[x.sorted_indices[:loss_n.num_seq]]
                 loss_n = loss_n.seq_sum(scale) # leading to (unpacked) sequences of lengths 1
-                loss_n = loss_n.sum() # now we have a scalar
+                loss_n = loss_n.sum()/n_batch # now we have a scalar
             else:
                 loss_n = loss_n.seq_sum() # leading to (unpacked) sequences of lengths 1
                 loss_n = loss_n.sum() # now we have a scalar

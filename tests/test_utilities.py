@@ -1,17 +1,15 @@
 from collections import namedtuple
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 import sys
 sys.path.append(".")
-from utilities import BreakUp, Combine, breakup_packed_sequence, combine_packed_sequence, struct_equal
+from vlrnn import  breakup_packed_sequence, combine_packed_sequence, struct_equal, BlockRNN, lengths_of_packed_sequence
 
 
-import block_rnn
 
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
-
 
 import pytest
 
@@ -31,14 +29,18 @@ def valid_packed_sequence(x: PackedSequence) -> bool :
     # both index lists have length N
     N = x.batch_sizes.max()
     assert N>0
-    rangeN = torch.arange(N)
+    rangeN = torch.arange(N, device=x.data.device)
     assert torch.equal(x.sorted_indices.sort()[0], rangeN)
     assert torch.equal(x.unsorted_indices.sort()[0], rangeN)
 
     # both index lists are inverse to each other
     assert torch.equal(x.sorted_indices[x.unsorted_indices], rangeN)
     assert torch.equal(x.unsorted_indices[x.sorted_indices], rangeN)
-
+    
+    # assert x.data.device == x.batch_sizes.device # for some reason batch_sizes reside on cpu
+    assert x.data.device == x.sorted_indices.device
+    assert x.data.device == x.unsorted_indices.device
+    
 
 def equal_packed_sequences(x, y):
 
@@ -48,9 +50,17 @@ def equal_packed_sequences(x, y):
     assert torch.equal(x.unsorted_indices, y.unsorted_indices)
 
 
+@pytest.fixture(scope='module', params=[
+    torch.device('cpu'), 
+    pytest.param(torch.device('cuda'), marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"))], 
+    ids=['CPU','CUDA'])
+def device(request):
+    return request.param
+
+
 @pytest.mark.parametrize("num_channels",[(), (3,), (4,5)])
 @pytest.mark.parametrize("num_chunks",[1,5,10,100])
-def test_breakup_packed_sequence(num_channels, num_chunks):
+def test_breakup_packed_sequence(num_channels, num_chunks, device):
     num_batch = 10
     max_seq_len = 100
     min_seq_len = 1
@@ -58,7 +68,7 @@ def test_breakup_packed_sequence(num_channels, num_chunks):
     #num_chunks = 8 ):
 
     lens = torch.randint(min_seq_len, max_seq_len+1, (num_batch,)) 
-    x = pack_sequence([torch.randn(l, *num_channels) for l in lens], enforce_sorted=False)
+    x = pack_sequence([torch.randn(l, *num_channels) for l in lens], enforce_sorted=False).to(device)
 
     x_chunk = breakup_packed_sequence(x, num_chunks)
 
@@ -69,15 +79,15 @@ def test_breakup_packed_sequence(num_channels, num_chunks):
     equal_packed_sequences(x, x_restore)
 
 
-def test_lens_of_packed_sequence():
+def test_lens_of_packed_sequence(device):
     num_batch = 10
     max_seq_len = 100
     min_seq_len = 1
     num_channels = ()
-    lens = torch.randint(min_seq_len, max_seq_len+1, (num_batch,)) 
-    x = pack_sequence([torch.randn(l,) for l in lens], enforce_sorted=False)
+    lens = torch.randint(min_seq_len, max_seq_len+1, (num_batch,), device=device) 
+    x = pack_sequence([torch.randn(l, device=device) for l in lens], enforce_sorted=False)
 
-    assert torch.equal(block_rnn.lengths_of_packed_sequence(x), lens)
+    assert torch.equal(lengths_of_packed_sequence(x), lens)
 
 
 
@@ -108,27 +118,4 @@ zp = pack_sequence([torch.randn(10), torch.randn(8), torch.randn(5)])
 def test_struct_equal(a, b, f):
     assert struct_equal(a, b) == f
     assert struct_equal(b, a) == f
-
-
-
-
-x = torch.arange(7*10).view(7,10)
-y = torch.arange(10*10).view(10,10)
-z = torch.randn(1,10)
-xp = pack_sequence([torch.arange(8), torch.arange(10), torch.arange(5)], enforce_sorted=False)
-yp = pack_sequence([torch.arange(8), torch.arange(10), torch.arange(5)], enforce_sorted=False)
-zp = pack_sequence([torch.randn(8), torch.randn(10), torch.randn(5)], enforce_sorted=False)
-
-
-@pytest.mark.parametrize("N",[1,3,10,20])
-@pytest.mark.parametrize("a, kwargs",[
-    (x,                         {}),    
-    ([x,(y,z)],                 {}),    
-    ([x,{'foo':y, 'bar':z}],    {}),    
-    (xp,                        {'sorted_indices':xp.sorted_indices, 'unsorted_indices':xp.unsorted_indices}),    
-    ([xp,(yp,zp)],              {'sorted_indices':xp.sorted_indices, 'unsorted_indices':xp.unsorted_indices}),    
-    ([xp,{'foo':yp, 'bar':zp}], {'sorted_indices':xp.sorted_indices, 'unsorted_indices':xp.unsorted_indices}),    
-])
-def test_breakup_combine(a,N, kwargs):
-    b = Combine(**kwargs)(BreakUp(N)(a))
-    assert struct_equal(a,b)
+    
