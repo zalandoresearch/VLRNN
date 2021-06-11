@@ -3,10 +3,8 @@ from typing import NamedTuple
 
 import sys
 sys.path.append(".")
-from utilities import breakup_packed_sequence, combine_packed_sequence
+from vlrnn import BlockRNN, breakup_packed_sequence, combine_packed_sequence
 
-
-import block_rnn
 
 import torch
 import torch.nn as nn
@@ -141,12 +139,10 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
             l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
             l_std = l_std.sum(1)
             if loss_scale == "MEAN":
-                l_std /= lens.to(globals.device)
-        else:
-            l_std = l_std.mean(1) if loss_scale == "MEAN" else l_std.sum(1)
+                l_std /= lens.to(globals.device) 
+        l_std = l_std.mean() if loss_scale == "MEAN" else l_std.sum()
         print(l_std)
-        l_std = l_std.sum()
-
+    
         l_std.backward()
         l_std = l_std.item()
         g_std = [p.grad.clone() for p in mods.parameters()]
@@ -158,7 +154,7 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         #################################################
 
         mods.zero_grad()
-        vlrnn = block_rnn.BlockRNN(rnn, outp, loss_scale)
+        vlrnn = BlockRNN(rnn, outp, loss_scale)
         l_chunk = vlrnn(x, None, y,  N)
         g_chunk = [p.grad.clone() for p in mods.parameters()]
         print("loss (chunked computation) {:.6f}".format(l_chunk))

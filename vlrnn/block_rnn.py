@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
 
-from utilities import breakup_packed_sequence, combine_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_unflatten, sum_of_packed_sequence
+from .utilities import breakup_packed_sequence, combine_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_unflatten, sum_of_packed_sequence
 
 class SequenceStruct(object):
     """A conatiner class that either represents a sequence container or a list of sequence containers. Sequence containers can be
@@ -147,10 +147,18 @@ class SequenceStruct(object):
             flat = [sum_of_packed_sequence(f, keepdim=True).sum() for f in struct_flatten(self.struct)]
         return torch.stack(flat,0).sum()
 
-
+    def batch_size(self):
+        x = next(struct_flatten(self.struct))
+        if isinstance(x, torch.Tensor):
+            return x.shape[0]
+        elif isinstance(x, PackedSequence):
+            return x.batch_sizes[0]
+        else:
+            raise ValueError(f"type {type(x)} cannot occur in SequenceStruct")
+ 
 class BlockRNN(nn.Module, ABC):
 
-    def __init__(self, rnn: nn.Module, out: BlockRNNOutput, loss_scaling: str, N: Optional[int]=None):
+    def __init__(self, rnn: nn.Module, out: nn.Module, loss_scaling: str, N: Optional[int]=None):
         
         super().__init__()
         assert loss_scaling in ['MEAN','SUM']
@@ -160,8 +168,8 @@ class BlockRNN(nn.Module, ABC):
         self.N = N
 
     def zero_grad(self):
-        self.rnn.zero_grad
-        self.out.zero_grad
+        self.rnn.zero_grad()
+        self.out.zero_grad()
 
     def _call_rnn(self, x, h):
         if isinstance(x, SequenceStruct):
@@ -170,7 +178,7 @@ class BlockRNN(nn.Module, ABC):
             h = h.struct
         return self.rnn(x, h)
 
-    def _call_out(self, z, y):
+    def _call_out(self, z, y=None):
         if isinstance(z, SequenceStruct):
             z = z.struct
         if y is not None and isinstance(y, SequenceStruct):
@@ -192,11 +200,15 @@ class BlockRNN(nn.Module, ABC):
             N = self.N
         assert N is not None and N>0
 
+        n_batch = x.batch_size()
+        assert n_batch > 0 
 
         x_blocks = x.breakup(N)
         if not sampling:
             y_blocks = y.breakup(N)
             assert len(x_blocks) == len(y_blocks)
+        else:
+            y_blocks = [None] * N
 
 
         N = len(x_blocks) # may be different than requested for packed sequences
@@ -236,7 +248,7 @@ class BlockRNN(nn.Module, ABC):
             if self.loss_scaling == "MEAN":
                 scale = x.seq_lengths[x.sorted_indices[:loss_n.num_seq]]
                 loss_n = loss_n.seq_sum(scale) # leading to (unpacked) sequences of lengths 1
-                loss_n = loss_n.sum() # now we have a scalar
+                loss_n = loss_n.sum()/n_batch # now we have a scalar
             else:
                 loss_n = loss_n.seq_sum() # leading to (unpacked) sequences of lengths 1
                 loss_n = loss_n.sum() # now we have a scalar

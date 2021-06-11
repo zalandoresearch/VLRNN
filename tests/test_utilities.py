@@ -3,10 +3,9 @@ from typing import NamedTuple, Sequence
 
 import sys
 sys.path.append(".")
-from utilities import  breakup_packed_sequence, combine_packed_sequence, struct_equal
+from vlrnn import  breakup_packed_sequence, combine_packed_sequence, struct_equal, BlockRNN, lengths_of_packed_sequence
 
 
-import block_rnn
 
 import torch
 import torch.nn as nn
@@ -88,7 +87,7 @@ def test_lens_of_packed_sequence(device):
     lens = torch.randint(min_seq_len, max_seq_len+1, (num_batch,), device=device) 
     x = pack_sequence([torch.randn(l, device=device) for l in lens], enforce_sorted=False)
 
-    assert torch.equal(block_rnn.lengths_of_packed_sequence(x), lens)
+    assert torch.equal(lengths_of_packed_sequence(x), lens)
 
 
 

@@ -3,8 +3,7 @@ from typing import NamedTuple, Sequence
 
 import sys
 sys.path.append(".")
-from utilities import div_vector, struct_flatten, struct_unflatten, struct_equal, lengths_of_packed_sequence
-from block_rnn import SequenceStruct
+from vlrnn import div_vector, struct_flatten, struct_unflatten, struct_equal, lengths_of_packed_sequence, SequenceStruct
 
 import pytest
 
