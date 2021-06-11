@@ -1,8 +1,7 @@
-### ToDo:
-- ~~variable sequence length~~
-- ~~structured hidden (LSTM, multilayer, mixed RNN)~~
-- make nn.Module classes
-- ~~no_grad computation~~
-- ~~loss aggregation~~
-- ~~unit tests~~
-- ~~GPU computation~~
+# Very Long Recurrent Neural Networks
+RNN for long sequences usually have an adverse ratio of GPU utilization over memory consumption. Processing a long sequences recurrently in general does not allow paralelization over the time dimension, as future activations depend on past activations. The only option for parallelization is over the batch dimension (increasing the batch size). 
+At the same time, long sequences give rise to large memory consumption when computing gradients with common automatic differentiation techniques. Usually, in the forward pass, all activations in all layers and time steps are computed and stored in GPU memory. In the backward pass, the loss is differentiated and deltas are propageted back through the network, where, together with the stored acticvations, they are used to compute the weight updates (https://en.wikipedia.org/wiki/Backpropagation_through_time). The memory demand of stored activations scales linearly with the batch size, hence batch size is no leaver to improve the utilization/memory ratio. The limited GPU memory may disallow reasonable GPU utilization to be achieved. 
+
+The proposed solution in VLRNN is to perform forward/backward computations in blocks of short sequence length such that all activations inside a block fit well into GPU memory for decent batch sizes. In order to compute updates in a block in the middle of the sequence, we need activations ![](https://latex.codecogs.com/gif.download?x_t) at the static input at the block, the latent input ![](https://latex.codecogs.com/gif.download?h_%7Bt-1%7D) of the block (the RNN hidden state or memory cells), the delta ![](https://latex.codecogs.com/gif.download?%5Cinline%20%5Cdelta%20z_%7Bt%7D) flowing into the block from sequence losses, and the deltas ![](https://latex.codecogs.com/gif.download?%5Cdelta%20h_%7Bt+%5CDelta%20T%7D) at the end of the block (flowing back from backpropagating the adjacent block). 
+
+![Block RNN Schema](doc/block_rnn.png?raw=true "Title")
