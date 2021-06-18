@@ -231,6 +231,7 @@ class BlockRNN(nn.Module, ABC):
                         return res                      
                     h_last = struct_map2( f, h_last, h)
 
+        h_last = struct_map(lambda h: h[:,x.unsorted_indices], h_last)
             
         #$# loss_blocks = [None] * N
 
