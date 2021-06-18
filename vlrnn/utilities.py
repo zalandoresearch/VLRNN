@@ -34,6 +34,19 @@ def struct_map(f, x):
         except:
             raise ValueError("cannot map {} over type type {}".format(f, type(x)))
 
+def struct_map2(f, x, y):
+    if isinstance(x, list):
+        return list(map(lambda xy: struct_map2(f, xy[0], xy[1]), zip(x,y)))
+    elif isinstance(x, tuple):
+        return tuple(map(lambda xy: struct_map2(f, xy[0], xy[1]), zip(x,y)))
+    elif x is None:
+        return None
+    else:
+        try:
+            return f(x,y)
+        except:
+            raise ValueError("cannot map {} over type type {}".format(f, type(x)))
+
 
 def grad_of(x):
     return struct_map(lambda xi: xi.grad, x)

@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
 
-from .utilities import breakup_packed_sequence, combine_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_unflatten, sum_of_packed_sequence
+from .utilities import breakup_packed_sequence, combine_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_map, struct_map2, struct_unflatten, sum_of_packed_sequence
 
 class SequenceStruct(object):
     """A conatiner class that either represents a sequence container or a list of sequence containers. Sequence containers can be
@@ -28,7 +28,7 @@ class SequenceStruct(object):
         self.sorted_indices = None
         self.unsorted_indices = None
 
-        self.parent_sorted_indices = None
+        # self.parent_sorted_indices = None
         self.validate()
 
     def validate(self, x=None, root=True):
@@ -193,6 +193,8 @@ class BlockRNN(nn.Module, ABC):
             y = SequenceStruct(y)
             assert x.is_compatible_with(y)
 
+        packed = x.container_type is PackedSequence
+
         if N is None:
             N = self.N
         assert N is not None and N>0
@@ -211,6 +213,7 @@ class BlockRNN(nn.Module, ABC):
         N = len(x_blocks) # may be different than requested for packed sequences
 
         h_blocks = [h0] + [None] * N
+        h_last = None # to aggregate the last
         with torch.no_grad():
             for n in range(N):
                 x_n = x_blocks[n]
@@ -218,6 +221,16 @@ class BlockRNN(nn.Module, ABC):
                 
                 z, h = self._call_rnn(x_n, h_n)
                 h_blocks[n + 1] = h
+
+                if h_last is None or not packed:
+                    h_last = h
+                else:  
+                    def f(h1,h2):
+                        res = h1.clone()
+                        res[:,:h2.shape[1]] = h2
+                        return res                      
+                    h_last = struct_map2( f, h_last, h)
+
             
         #$# loss_blocks = [None] * N
 
@@ -272,7 +285,7 @@ class BlockRNN(nn.Module, ABC):
         if return_y:
             res = res + (SequenceStruct.combine(y_blocks, sorted_indices=x.sorted_indices, unsorted_indices=x.unsorted_indices).struct,)
         if return_h == 'last':
-            res = res + (h_blocks[-1],)
+            res = res + (h_last,)
 
         if len(res)==1:
             res = res[0]
