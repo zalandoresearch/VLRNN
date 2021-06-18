@@ -4,6 +4,7 @@ from typing import NamedTuple
 import sys
 sys.path.append(".")
 from vlrnn import BlockRNN, breakup_packed_sequence, combine_packed_sequence
+from tests.test_utilities import equal_packed_sequences
 
 
 import torch
@@ -62,17 +63,30 @@ class Outp(nn.Sequential):
     def __init__(sel, n_hidden, n_out):
         super().__init__( nn.Linear(n_hidden ,10) ,nn.ELU() ,nn.Linear(10 ,n_out))
 
-    def _forward(self, z, y):
+    def _forward(self, z, y, return_y):
         logits = super().forward(z)
-        return -torch.distributions.Categorical(logits=logits).log_prob(y)
-
-    def forward(self, z, y):
-        if isinstance(z, torch.Tensor):
-            return self._forward(z,y)
+        loss =  -torch.distributions.Categorical(logits=logits).log_prob(y)
+        if return_y:
+            return loss, y
         else:
-            l = PackedSequence(data=self._forward(z.data, y.data), batch_sizes=z.batch_sizes, 
-                               sorted_indices=z.sorted_indices, unsorted_indices=z.unsorted_indices)    
-            return l
+            return loss
+
+    def forward(self, z, y, return_y=False):
+
+        
+        if isinstance(z, torch.Tensor):
+            return self._forward(z, y, return_y)
+        else:
+            res = self._forward(z.data, y.data, return_y)
+            if return_y:
+                res = ( PackedSequence(data=res[0], batch_sizes=z.batch_sizes, 
+                               sorted_indices=z.sorted_indices, unsorted_indices=z.unsorted_indices),
+                        PackedSequence(data=res[1], batch_sizes=z.batch_sizes, 
+                               sorted_indices=z.sorted_indices, unsorted_indices=z.unsorted_indices) )
+            else:
+                res = PackedSequence(data=res, batch_sizes=z.batch_sizes, 
+                               sorted_indices=z.sorted_indices, unsorted_indices=z.unsorted_indices)
+            return res
 
 @pytest.fixture(scope="module")
 def outp(globals):
@@ -120,6 +134,13 @@ def create_sequences(globals):
 
     return x,y    
 
+def equal_sequence(x, y):
+    if isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor):
+        return torch.equal(x,y)
+    elif isinstance(x, PackedSequence) and isinstance(y, PackedSequence):
+        return equal_packed_sequences(x, y)
+    else:
+        return False
 
 @pytest.mark.parametrize("loss_scale",["SUM","MEAN"])
 @pytest.mark.parametrize("N",[1,2,7,10])
@@ -163,3 +184,10 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         assert all([torch.allclose(g1, g2) for g1, g2 in zip(g_chunk, g_std )])
         #print("losses and gradients equal:", good)
         #print()
+
+        l_chunk, y_ = vlrnn(x, None, y,  N, return_y=True)
+        equal_sequence(y, y_)
+
+        l_chunk, y_, h = vlrnn(x, None, y,  N, return_y=True, return_h='last')
+        l_chunk, h = vlrnn(x, None, y,  N, return_h='last')
+        

@@ -178,23 +178,20 @@ class BlockRNN(nn.Module, ABC):
             h = h.struct
         return self.rnn(x, h)
 
-    def _call_out(self, z, y=None):
+    def _call_out(self, z, y=None, return_y=False):
         if isinstance(z, SequenceStruct):
             z = z.struct
         if y is not None and isinstance(y, SequenceStruct):
             y = y.struct
-        return self.out(z, y)
+        return self.out(z, y, return_y=return_y)
 
 
-    def forward(self, x, h0, y=None, N=None):
+    def forward(self, x, h0, y=None, N=None, return_y=None, return_h=None):
 
         x = SequenceStruct(x)
         if y is not None:
             y = SequenceStruct(y)
             assert x.is_compatible_with(y)
-            sampling = False
-        else:
-            sampling = True
 
         if N is None:
             N = self.N
@@ -204,7 +201,7 @@ class BlockRNN(nn.Module, ABC):
         assert n_batch > 0 
 
         x_blocks = x.breakup(N)
-        if not sampling:
+        if y is not None:
             y_blocks = y.breakup(N)
             assert len(x_blocks) == len(y_blocks)
         else:
@@ -218,7 +215,7 @@ class BlockRNN(nn.Module, ABC):
             for n in range(N):
                 x_n = x_blocks[n]
                 h_n = h_blocks[n]
-
+                
                 z, h = self._call_rnn(x_n, h_n)
                 h_blocks[n + 1] = h
             
@@ -238,8 +235,8 @@ class BlockRNN(nn.Module, ABC):
                     requires_grad(h_n, True)
 
             z_n, h_n_plus_1 = self._call_rnn(x_n, h_n)
-            if sampling:
-                loss_n, y_n = self._call_out(z_n)
+            if return_y:
+                loss_n, y_n = self._call_out(z_n, y_n, return_y=True)
                 y_blocks[n] = SequenceStruct(y_n)
             else:
                 loss_n = self._call_out(z_n, y_n)
@@ -270,7 +267,14 @@ class BlockRNN(nn.Module, ABC):
 
             loss = loss + loss_n.detach() #.item()
 
-        if sampling:
-            return loss, SequenceStruct.combine(y_blocks, sorted_indices=x.sorted_indices, unsorted_indices=x.unsorted_indices)
-        else:
-            return loss #$#, torch.cat(loss_blocks, 1)
+        res = (loss,)
+
+        if return_y:
+            res = res + (SequenceStruct.combine(y_blocks, sorted_indices=x.sorted_indices, unsorted_indices=x.unsorted_indices).struct,)
+        if return_h == 'last':
+            res = res + (h_blocks[-1],)
+
+        if len(res)==1:
+            res = res[0]
+
+        return res
