@@ -25,7 +25,7 @@ The proposed solution in VLRNN is to perform forward/backward computations in bl
 
 Except for the latent (hidden state) activations and deltas, everything is available. For 𝛿**z**<sub>t</sub> we run a forward/backward pass through the output of the block, including the loss. For the latent activations we first run a forward pass through the network with gradient computations disabled and compute (and keep in GPU memory) the latent activations at the block entry points
 ![equation](https://latex.codecogs.com/png.latex?%5Cinline%20%5Clarge%20h_%7Bn%5CDelta%20t%7D%2C%5C%20n%3D0%5Cldots%20N-1) for all N blocks.
-Then we compute usual forward/backward passed through each block from last to first, collect gradients to all the (shared) weights in the block, and release all activations and deltas of this block, except ![\delta h_t](https://latex.codecogs.com/png.latex?%5Cinline%20%5Clarge%20%5Cdelta%20h_t) at the block input, from GPU memory. ![\delta h_t](https://latex.codecogs.com/png.latex?%5Cinline%20%5Clarge%20%5Cdelta%20h_t) is feed into the backward process of the proceeding block.
+Then we compute usual forward/backward passed through each block from last to first, collect gradients to all the (shared) weights in the block, and release all activations and deltas of this block, except ![\delta h_t](https://latex.codecogs.com/png.latex?%5Cinline%20%5Clarge%20%5Cdelta%20h_t) at the block input, from GPU memory. ![\delta h_t](https://latex.codecogs.com/png.latex?%5Cinline%20%5Clarge%20%5Cdelta%20h_t) is feed into the backward process of the preceding block.
 
 
 
