@@ -4,6 +4,8 @@ data/
 slurm-*.out
 .idea/
 .vscode/
+scratch
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
