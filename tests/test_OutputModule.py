@@ -36,7 +36,7 @@ def sequences(globals):
 
     z_short = torch.randn(globals.n_batch, globals.n_seq-2, 10)
     
-    return  z1, z2, z3, z_short
+    return  z1, z2, z3, zp1, z_short
 
 
 
@@ -44,21 +44,23 @@ def sequences(globals):
 
 
 def test_forward0(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
         def forward(self, z1, *args, **kwargs):
             return torch.randn(*z1.shape[:2])
 
     with pytest.raises(TypeError):
-        Out()( z1) # forward() cannot be declared with *args
+        Out()( z1) # forward() must be called with two arguments (and optional kwargs), but had 1 fixed arguments
+    with pytest.raises(TypeError):
+        Out()( z1, z3) # forward() must be called with two arguments (and optional kwargs), but had 1 fixed arguments
 
 
 def test_forward1(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
-        def forward(self, z1, z2, z3=None):
+        def forward(self, z1, y, z3=None):
             return torch.randn(*z1.shape[:2])
 
     with pytest.raises(TypeError):
@@ -66,28 +68,33 @@ def test_forward1(sequences):
 
 
 def test_forward2(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
-        def forward(self, z1, z2, z3=None):
-            return torch.randn(*z1.shape[:2])
+        def forward(self, z, y=None, z3=None):
+            return torch.randn(*z.shape[:2])
 
-    Out()( z1, z2, z3) # good
+    Out()( z1, z2, z3=z3) # ok, z3 is extra arg
+    Out()( z1, z3=z3) # ok, y is default None
+
+    with pytest.raises(TypeError):
+        Out() (zp1) # no packed sequences in OutputModule
 
 
 def test_forward3(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
-        def forward(self, z1, z2, z3=None):
-            return torch.randn(*z1.shape[:2])
+        def forward(self, z, y, z3=None):
+            return torch.randn(*z.shape[:2])
 
+    Out()( z1, None, z3) # ok, y can be None
     with pytest.raises(TypeError):
-        Out()( z1, None, z3) # forward() must be called with argument z1, which is missing (arg is None but not optional)
+        Out()( None, z1, z3) # forward() must be called with argument z: (<class 'torch.Tensor'>, <class 'torch.nn.utils.rnn.PackedSequence'>, <class 'tuple'>), was called with None
 
 
 def test_forward4(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
         def forward(self, z1, z2, z3=None):
@@ -97,39 +104,41 @@ def test_forward4(sequences):
 
 
 def test_forward5(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
         def forward(self, z1, z2, z3=None):
             return torch.randn(*z1.shape[:2])
     
-    with pytest.raises(ValueError):
-        Out()( z1, z2, z_short) # argument z3 of forward() must be (8,100,...) sequence Tensor, but had shape torch.Size([8, 98, 10])
+    Out()( z1, z2, z_short) # ok, z_short is extra arg
 
 
 def test_forward6(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
-        def forward(self, z1, z2, z3=None):
-            return torch.randn(*z1.shape[:2])
+        def forward(self, z, y, z3=None):
+            return torch.randn(*z[0].shape[:2])
     
     with pytest.raises(ValueError):
-        Out()( z1, z2, z_short) # argument z3 of forward() must be (8,100,...) sequence Tensor, but had shape torch.Size([8, 98, 10])
+        Out()( (z1, z2), z_short) # argument z3 of forward() must be (8,100,...) sequence Tensor, but had shape torch.Size([8, 98, 10])
+
+    Out()( (z1, z2), z3) # ok
 
 
 def test_forward7(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
-        def forward(self, z1, z2, z3=None, mode='Train'): # bad, mode is interpreted as sequence
+        def forward(self, z1, z2, z3=None, mode='Train'): # 
             return torch.randn(*z1.shape[:2])
     
-    with pytest.raises(TypeError):
-        Out()( z1, z2, z3, 'eval') # forward() must be called with argument mode: (<class 'torch.Tensor'>, <class 'NoneType'>), was called with eval
+    Out()( z1, z2, z3, 'eval') # z3 and 'eval' are interpreted as extra paremeters
+    Out()( z1, z2, z3=z3, mode='eval') # z3 and 'eval' are interpreted as extra paremeters
+
 
 def test_forward8(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
         def forward(self, z1, z2, z3=None, **kwargs): 
@@ -140,18 +149,18 @@ def test_forward8(sequences):
     
 
 def test_forward9(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
         def forward(self, z1, z2, z3=None): 
-            return torch.randn(*z1.shape[:2]), z3 # returning two sequences is fine
+            return torch.randn(*z1.shape[:2]), z3 # returning an extra sequence is fine
     
     Out()( z1, z2, z3) # good
     Out()( z1, z2) # also good, second returned argument is None
     
     
 def test_forward10(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
         def forward(self, z1, z2, z3=None): 
@@ -162,7 +171,7 @@ def test_forward10(sequences):
     
     
 def test_forward10(sequences):
-    z1, z2, z3, z_short = sequences
+    z1, z2, z3, zp1, z_short = sequences
 
     class Out(OutputModule):
         def forward(self, z1, z2, z3=None): 

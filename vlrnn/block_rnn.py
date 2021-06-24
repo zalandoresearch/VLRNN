@@ -295,27 +295,6 @@ class BlockRNN(nn.Module, ABC):
         return res
 
 
-
-def check_arg( args, kwargs, pos, name, optional, types, action):
-    if len(args)>pos and (name in kwargs):
-        raise TypeError(f"forward() got multiple values for argument '{name}'")
-
-    if len(args)>pos:
-        arg = args[pos]
-    elif name in kwargs:
-        arg = kwargs[name]
-    else:
-        arg=None
-    if (arg is None and not optional):
-        raise TypeError(f"{action} {name}, which is missing")
-    
-    if (not isinstance(arg,types)):
-        raise TypeError( f"{action} {name}: {types}, was called with {arg} ")
-    
-    return arg
-
-
-
 class _CheckedModule(nn.Module):
 
     def __init__(self):
@@ -356,7 +335,7 @@ class _CheckedModule(nn.Module):
                     raise ValueError(f"{action} {name} of forward() must be PackedSequence with sequence lengths {self.n_seq}, but has lengths {n_seq}")
             else:
                 if not isinstance(x, torch.Tensor):
-                    raise TypeError(f"{action} {name} of forward() must be a sequence Tensor")
+                    raise TypeError(f"{action} {name} of forward() must be a sequence Tensor, but was {type(x)}")
                 if (x.ndim<2) or (x.shape[0] != self.n_batch) or (x.shape[1]!=self.n_seq):
                     raise ValueError(f"argument {name} of forward() must be ({self.n_batch},{self.n_seq},...) sequence Tensor, but had shape {x.shape}")
 
@@ -367,11 +346,34 @@ class _CheckedModule(nn.Module):
             raise ValueError(f"hidden state {action} {name} must be batch-first Tensor with batch_size {self.n_batch}, but was shape {h.shape}")
 
 
+    def check_sequence_arg(self, z, name, action):
+        if type(z) not in (torch.Tensor, PackedSequence, tuple):
+            raise TypeError(f"{action} {name} of forward() must be a sequence or a tuple of sequences, but was {type(z)}")
+
+        if type(z) is not tuple:
+            z = (z,)
+
+        for i,z_ in enumerate(z):
+            # ToDo: possibly allow None values in the tuple of sequences
+            self.valid_sequence(z_, f"{name}[{i}]", action)
+
+
+    def check_latent_arg(self, h, name, action):
+        if type(h) not in (torch.Tensor, tuple):
+            raise TypeError(f"{action} {name} of forward() must be a latent tensor or a tuple of latent tensors, but was {type(h)}")
+
+        if type(h) is not tuple:
+            h = (h,)
+
+        for i,h_ in enumerate(h):
+            # ToDo: possibly allow None values in the tuple of latent tensors
+            self.valid_latent(h_, f"{name}[{i}]", action)
+
 
 class OutputModule(_CheckedModule):
     
     @abstractmethod
-    def forward(self, z, **kwargs):
+    def forward(self, z, y, **kwargs):
         pass
 
 
@@ -381,20 +383,25 @@ class OutputModule(_CheckedModule):
             return 
 
         argspec = inspect.getfullargspec(self.forward)
-
-        if argspec.varargs is not None:
-            raise TypeError("forward() cannot be declared with *args")
-
-        D = len(argspec.defaults) if argspec.defaults is not None else 0 
+        callargs = inspect.getcallargs( self.forward, *args, **kwargs)
+        
         M = len(argspec.args)-1   
 
-        for i in range(M):
-            name = argspec.args[i+1]
-            optional = D-M+i>=0
+        if M<2:
+            raise TypeError(f"forward() must be called with two arguments (and optional kwargs), but had {M} fixed arguments")
 
-            z = check_arg(args, kwargs, i, name, optional, (torch.Tensor, type(None)) , "forward() must be called with argument")
-            if z is not None:
-                self.valid_sequence(z, name, 'argument')
+        name = argspec.args[1]
+        z = callargs[name]
+        self.check_sequence_arg(z, name, 'argument')
+
+        if self.packed:
+            raise TypeError("forward() cannot be called with packed sequences")
+
+        name = argspec.args[2]
+        y = callargs[name]
+        if y is not None:
+            self.check_sequence_arg(y, name, 'argument')
+
 
 
     def output_parameter_check(self, res):
@@ -402,20 +409,26 @@ class OutputModule(_CheckedModule):
         if not self.enable_checks:
             return 
 
-        if not isinstance(res, tuple):
+        if type(res) is not tuple:
             res = (res,)
+        if  len(res)<1:
+            raise TypeError(f"forward() must return at least one output, loss, but returned {res}")
 
-        l = check_arg(res, {}, 0, 'loss', False, torch.Tensor, "forward() must return")
-
+        l = res[0]
         self.valid_sequence(l, "loss", "output")
         if (l.ndim != 2) :
             raise ValueError( f"forward() must return loss: Tensor(n_batch={self.n_batch}, n_seq={self.n_seq}), but returned shape {l.shape} ")
+
+        if len(res) > 1:
+            extra_seq = res[1]
+            if extra_seq is not None:
+                self.check_sequence_arg(extra_seq, 'extra_seq', 'output')
 
 
 class RNNModule(_CheckedModule):
 
     @abstractmethod
-    def forward(self, x, h):
+    def forward(self, x, h, **kwargs):
         pass
 
 
@@ -425,59 +438,39 @@ class RNNModule(_CheckedModule):
             return 
 
         argspec = inspect.getfullargspec(self.forward)
+        callargs = inspect.getcallargs( self.forward, *args, **kwargs)
 
-        if argspec.varargs is not None:
-            raise TypeError("forward() cannot be declared with *args")
-
-        D = len(argspec.defaults) if argspec.defaults is not None else 0 
         M = len(argspec.args)-1   
 
+        if M<2:
+            raise TypeError(f"forward() must be called with at least two fixed arguments (and optional args, kwargs), but had {M} fixed arguments {argspec.args[1:M+1]}")
+        
+        name = argspec.args[1]
+        x = callargs[name]
+        self.check_sequence_arg( x, name, 'argument')
 
-        for i in range(M):
-            name = argspec.args[i+1]
-            optional = D-M+i>=0
-
-            if i<M-1:
-                x = check_arg(args, kwargs, i, name, optional, (torch.Tensor, PackedSequence, type(None)), "forward() must be called with argument")
-                if x is not None or i==0:
-                    self.valid_sequence(x, name, "argument")
-
-            else:
-                h = check_arg(args, kwargs, i, name, optional, (torch.Tensor, list, tuple, type(None)), "forward() must be called with argument")
-                if h is not None:
-                    if  isinstance(h, torch.Tensor):
-                        h = (h,)
-                    for i,h_ in enumerate(h):
-                        self.valid_latent(h_, f"{name}[{i}]", "argument")
+        name = argspec.args[2]
+        h = callargs[name]
+        if h is not None:
+            self.check_latent_arg( h, name, 'argument')
 
 
     def output_parameter_check(self, res):
         
         if not self.enable_checks:
             return 
-        if not isinstance(res, tuple) or len(res)!=2:
+        if (type(res) is not tuple) or len(res)<2:
             raise TypeError(f"forward() must return two (tuples of) outputs, z and h, but returned {res}")
-        z, h = res
+        z = res[0]
+        h = res[1]
 
-        if z is not None:
-            if isinstance(z,(PackedSequence, torch.Tensor)):
-                z = (z,)
-            for i,z_ in enumerate(z):
-                if z_ is not None:
-                    self.valid_sequence(z_, f"z[{i}]", "output")
-                elif i==0:
-                    raise ValueError(f"output z[{i}] of forward() must be a valid sequence, but was None")
-        else:
-            raise ValueError(f"first output z of forward() must not be None")
-
+        self.check_sequence_arg(z, 'z', 'output')
         if h is not None:
-            if isinstance(h,(torch.Tensor)):
-                h = (h,)
-            for i,h_ in enumerate(h):
-                if h_ is not None:
-                    self.valid_latent(h_, f"h[{i}]", "output")
-
-
+            self.check_latent_arg(h, 'h', 'output')
+        if len(res) >= 3:
+            extra_seq = res[2]
+            if extra_seq is not None:
+                self.check_sequence_arg(extra_seq, 'extra_seq', 'output')
 
 
 class BaseRNN(nn.Module):
@@ -544,9 +537,9 @@ class PlainRNN(BaseRNN):
         self.loss_scaling = loss_scaling
 
 
-    def forward(self, x, y, h0):
+    def forward(self, x, y, h0, *args, **kwargs):
 
-        z, h = self.rnn( x, h0)
+        z, h, extra_seq_rnn = self.rnn( x, h0, *args, **kwargs)
 
         if self.ispacked(x):
             example = self.flatten(x)[0]
@@ -554,10 +547,9 @@ class PlainRNN(BaseRNN):
             assert self.ispacked(y)
             y = self.open_packed_sequence(y)
 
-        loss, l, v = self.out(z, y) 
+        loss, extra_seq_out = self.out(z, y, *args, **kwargs) 
 
         if self.ispacked(x):
-            l = self.close_packed_sequence(l, example) 
-            v = self.close_packed_sequence(v, example)           
+            extra_seq_out = self.close_packed_sequence(extra_seq_out, example) 
 
-        return loss, l, h, v
+        return loss, extra_seq_rnn, extra_seq_out, h
