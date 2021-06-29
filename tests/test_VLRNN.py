@@ -147,4 +147,3 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         l_chunk = l_chunk.item()
 
         assert all([torch.allclose(g1, g2) for g1, g2 in zip(g_chunk, g_std )])
-        
