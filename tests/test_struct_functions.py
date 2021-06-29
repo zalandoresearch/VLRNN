@@ -1,6 +1,4 @@
 
-import sys
-sys.path.append(".")
 from vlrnn import struct_flatten, struct_unflatten, struct_equal, lengths_of_packed_sequence
 
 import pytest
