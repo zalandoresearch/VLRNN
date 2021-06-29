@@ -1,15 +1,12 @@
-from collections import namedtuple
-from typing import NamedTuple, Sequence
 
 import sys
 sys.path.append(".")
-from vlrnn import  breakup_packed_sequence, combine_packed_sequence, struct_equal, BlockRNN, lengths_of_packed_sequence
+from vlrnn import  breakup_packed_sequence, combine_packed_sequence, struct_equal, lengths_of_packed_sequence
 
 
 
 import torch
-import torch.nn as nn
-from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import PackedSequence, pack_sequence
 
 import pytest
 

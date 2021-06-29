@@ -218,60 +218,43 @@ def chunk_lengths(chunks: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
     return lengths
 
 
-# class BreakUp(object):
+def flatten(x):
+    if isinstance(x, type(None)):
+        return ()
+    if isinstance(x, (torch.Tensor, PackedSequence)):
+        return (x,)
+    if type(x) is  tuple:
+        return tuple(xi for xi in x if xi is not None)            
 
-#     def __init__(self, N):
-#         self.N = N
-#         self.datatype = None 
 
-#     def __call__(self, x):
+def ispacked(x):
+    if isinstance(x, (type(None), PackedSequence)):
+        return True
+    if isinstance(x, tuple) and all( isinstance(xi, (type(None), PackedSequence)) for xi in x):
+        return True
+    if any( isinstance(xi, (type(None), PackedSequence)) for xi in x):
+        raise TypeError("Some, but not all items in x are PackedSequences.")
 
-#         if isinstance(x, torch.Tensor):
-#             assert self.datatype in [None, torch.Tensor]
-#             self.datatype = torch.Tensor
-#             return list(x.chunk( self.N, dim=1))
+    return False
 
-#         if isinstance(x, PackedSequence):
-#             assert self.datatype in [None, PackedSequence]
-#             self.datatype = PackedSequence
-#             return breakup_packed_sequence(x, self.N)
 
-#         if isinstance(x, tuple):
-#             return list( zip( *(self.__call__(xi) for xi in x)) )
+def open_packed_sequence(x):
+    if isinstance(x, type(None)):
+        return None
+    if isinstance(x, PackedSequence):
+        return x.data.unsqueeze(0)
+    if isinstance(x, tuple):
+        return tuple( open_packed_sequence(xi) for xi in x)
+    raise TypeError("x is not a (tuple of) packed sequence(s)")
 
-#         if isinstance(x, list):
-#             return list( list(block) for block in zip( *(self.__call__(xi) for xi in x)) )
 
-#         if isinstance(x, dict):
-#             return list( dict(zip(x.keys(),block)) for block in zip( *(self.__call__(xv) for xv in x.values())) )
+def close_packed_sequence(x, example: PackedSequence):
+    if isinstance(x, type(None)):
+        return None
+    if isinstance(x, torch.Tensor):
+        return PackedSequence( data=x.squeeze(0), batch_sizes=example.batch_sizes, 
+        sorted_indices=example.sorted_indices, unsorted_indices=example.unsorted_indices)
+    if isinstance(x, tuple):
+        return tuple( close_packed_sequence(xi, example) for xi in x)
+    raise TypeError("x is not a (tuple of) opened packed sequence(s)")
 
-#         raise ValueError(f'unknown type {type(x)}')
-
-# class Combine(object):
-
-#     def __init__(self, **kwargs):
-#         self.N = None
-#         self.datatype = None 
-#         self.kwargs = kwargs
-
-#     def __call__(self, x):
-#         assert isinstance(x,list)
-
-#         #print(x)
-#         assert self.N is None or len(x)==self.N
-#         self.N = len(x)
-
-#         if isinstance(x[0], torch.Tensor):
-#             return torch.cat(x, dim=1)
-    
-#         if isinstance(x[0], PackedSequence):
-#             return combine_packed_sequence(x, **self.kwargs)
-    
-#         if isinstance(x[0], tuple):
-#             return tuple(self.__call__(list(xi)) for xi in zip(*x))
-
-#         if isinstance(x[0], list):
-#             return list(self.__call__(list(xi)) for xi in zip(*x))
-
-#         if isinstance(x[0], dict):     
-#             return dict(zip(x[0].keys(), tuple(self.__call__(list(xi)) for xi in zip(*(xj.values() for xj in x)))))

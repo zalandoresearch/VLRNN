@@ -9,290 +9,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
 
-from .utilities import breakup_packed_sequence, combine_packed_sequence, div_vector, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, struct_equal, struct_flatten, requires_grad, grad_of, struct_map, struct_map2, struct_unflatten, sum_of_packed_sequence
-
-class SequenceStruct(object):
-    """A conatiner class that either represents a sequence container or a list of sequence containers. Sequence containers can be
-    * torch.Tensor for regular, equally sized, batch-first sequences  (num_batch, len_seq, channle_1, channel_2, ...)
-    * torch.nn.utils.rnn.PackedSequence
-
-    In a list, all containers ust be of same type and structure regarding batch size, sequence length(s).
-    """
-    def __init__(self, struct):
-        if isinstance( struct_equal, SequenceStruct):
-            self.struct = struct.struct
-        else:
-            self.struct = struct
-        self.container_type = None
-        self.num_seq = None
-        self.seq_lengths = None
-        self.sorted_indices = None
-        self.unsorted_indices = None
-
-        # self.parent_sorted_indices = None
-        self.validate()
-
-    def validate(self, x=None, root=True):
-        if root:
-            x = self.struct
-
-        if isinstance(x, torch.Tensor):
-            # print(x.shape)
-            self.assert_and_assign('container_type', torch.Tensor)
-            self.assert_and_assign('seq_lengths', torch.full((x.shape[0],), x.shape[1], dtype=torch.long, device=x.device))
-            self.assert_and_assign('num_seq', x.shape[0]) 
-            self.assert_and_assign('sorted_indices', torch.arange(x.shape[0], device=x.device))
-            self.assert_and_assign('unsorted_indices', torch.arange(x.shape[0], device=x.device))
-
-        elif isinstance(x, PackedSequence):
-            self.assert_and_assign('container_type', PackedSequence)
-            self.assert_and_assign('seq_lengths', lengths_of_packed_sequence(x)) 
-            self.assert_and_assign('num_seq', x.batch_sizes[0]) 
-            self.assert_and_assign('sorted_indices', x.sorted_indices)
-            self.assert_and_assign('unsorted_indices', x.unsorted_indices)
-
-
-        elif isinstance(x, list):
-            assert root # no lists of lists allowed!
-            for xi in x:
-                self.validate(xi, root=False)
-        else:
-            raise ValueError(f'SequenceStruct cannot contain objets of type {type(x)}')
-
-
-    def assert_and_assign(self, name, new_value):
-        old_value = getattr(self, name)
-        # print(name, old_value, new_value, file=sys.stderr)
-        if old_value is None:
-            setattr(self, name, new_value)
-        else:
-            assert struct_equal(old_value, new_value)
-
-
-    def is_compatible_with(self,  y: SequenceStruct) -> bool:
-        # same seq_lengths (implying same batch_size for PackedSequences)
-        # same container type (Tensor or PackedSequence)
-        if self.container_type != y.container_type: 
-            return False
-        return torch.equal( self.seq_lengths, y.seq_lengths)
-
-
-    @staticmethod
-    def breakup_container(x: Union[torch.Tensor,PackedSequence], N) -> List[Union[torch.Tensor,PackedSequence]]:
-        if isinstance(x, torch.Tensor):
-            return list(x.chunk( N, dim=1))
-
-        if isinstance(x, PackedSequence):
-            return breakup_packed_sequence(x, N)
-
-
-    def breakup(self, N: int) -> List[SequenceStruct]:
-        if isinstance( self.struct, list):
-            return [SequenceStruct(list(s)) for s in zip(*(self.breakup_container(x, N) for x in self.struct))]
-        else:
-            return [SequenceStruct(x) for x in self.breakup_container(self.struct, N)]
-
-
-    @staticmethod
-    def combine_container(x: List[Union[torch.Tensor,PackedSequence]], **kwargs) -> Union[torch.Tensor,PackedSequence]:
-        if isinstance(x[0], torch.Tensor):
-            return torch.cat(x, dim=1)
-    
-        if isinstance(x[0], PackedSequence):
-            return combine_packed_sequence(x, **kwargs)
-
-
-    @staticmethod
-    def combine(s: List[SequenceStruct], **kwargs) -> SequenceStruct:
-        if isinstance( s[0].struct, list):
-            return SequenceStruct([SequenceStruct.combine_container(list(x), **kwargs) for x in zip(*[si.struct for si in s])])
-        else:
-            return SequenceStruct( SequenceStruct.combine_container( [si.struct for si in s], **kwargs))
-        
-
-    def seq_mean(self, x=None, root=True) -> SequenceStruct:
-        if self.container_type is torch.Tensor:
-            flat = (f.mean(1,keepdim=True) for f in struct_flatten(self.struct))
-        elif self.container_type is PackedSequence:
-            flat = (mean_of_packed_sequence(f,keepdim=True) for f in struct_flatten(self.struct))
-        return SequenceStruct(struct_unflatten(flat, self.struct))
-
-
-    def seq_sum(self, scale=None) -> SequenceStruct:
-        if self.container_type is torch.Tensor:
-            if scale is None:
-                aggr = lambda f: f.sum(1,keepdim=True)
-            else:
-                aggr = lambda f: div_vector( f.sum(1,keepdim=True), scale, dim=0)
-
-        elif self.container_type is PackedSequence:
-            if scale is None:
-                aggr = lambda f: sum_of_packed_sequence(f, keepdim=True)
-            else:
-                aggr = lambda f: div_vector( sum_of_packed_sequence(f, keepdim=True), scale, dim=0)
-                
-        flat = (aggr(f) for f in struct_flatten(self.struct))
-        return SequenceStruct(struct_unflatten(flat, self.struct))
-
-    def mean(self):
-        if self.container_type is torch.Tensor:
-            flat = [f.mean(1).flatten() for f in struct_flatten(self.struct)]
-        elif self.container_type is PackedSequence:
-            flat = [mean_of_packed_sequence(f, keepdim=True).flatten() for f in struct_flatten(self.struct)]
-        return torch.cat(flat,0).mean()
-
-    def sum(self):
-        if self.container_type is torch.Tensor:
-            flat = [f.sum() for f in struct_flatten(self.struct)]
-        elif self.container_type is PackedSequence:
-            flat = [sum_of_packed_sequence(f, keepdim=True).sum() for f in struct_flatten(self.struct)]
-        return torch.stack(flat,0).sum()
-
-    def batch_size(self):
-        x = next(struct_flatten(self.struct))
-        if isinstance(x, torch.Tensor):
-            return x.shape[0]
-        elif isinstance(x, PackedSequence):
-            return x.batch_sizes[0]
-        else:
-            raise ValueError(f"type {type(x)} cannot occur in SequenceStruct")
- 
-class BlockRNN(nn.Module, ABC):
-
-    def __init__(self, rnn: nn.Module, out: nn.Module, loss_scaling: str, N: Optional[int]=None):
-        
-        super().__init__()
-        assert loss_scaling in ['MEAN','SUM']
-        self.rnn = rnn
-        self.out = out
-        self.loss_scaling = loss_scaling
-        self.N = N
-
-    def zero_grad(self):
-        self.rnn.zero_grad()
-        self.out.zero_grad()
-
-    def _call_rnn(self, x, h):
-        if isinstance(x, SequenceStruct):
-            x = x.struct
-        if h is not None and isinstance(h, SequenceStruct):
-            h = h.struct
-        return self.rnn(x, h)
-
-    def _call_out(self, z, y=None, return_y=False):
-        if isinstance(z, SequenceStruct):
-            z = z.struct
-        if y is not None and isinstance(y, SequenceStruct):
-            y = y.struct
-        return self.out(z, y, return_y=return_y)
-
-
-    def forward(self, x, h0, y=None, N=None, return_y=None, return_h=None):
-
-        x = SequenceStruct(x)
-        if y is not None:
-            y = SequenceStruct(y)
-            assert x.is_compatible_with(y)
-
-        packed = x.container_type is PackedSequence
-
-        if N is None:
-            N = self.N
-        assert N is not None and N>0
-
-        n_batch = x.batch_size()
-        assert n_batch > 0 
-
-        x_blocks = x.breakup(N)
-        if y is not None:
-            y_blocks = y.breakup(N)
-            assert len(x_blocks) == len(y_blocks)
-        else:
-            y_blocks = [None] * N
-
-
-        N = len(x_blocks) # may be different than requested for packed sequences
-
-        h_blocks = [h0] + [None] * N
-        h_last = None # to aggregate the last
-        with torch.no_grad():
-            for n in range(N):
-                x_n = x_blocks[n]
-                h_n = h_blocks[n]
-                
-                z, h = self._call_rnn(x_n, h_n)
-                h_blocks[n + 1] = h
-
-                if h_last is None or not packed:
-                    h_last = h
-                else:  
-                    def f(h1,h2):
-                        res = h1.clone()
-                        res[:,:h2.shape[1]] = h2
-                        return res                      
-                    h_last = struct_map2( f, h_last, h)
-
-        h_last = struct_map(lambda h: h[:,x.unsorted_indices], h_last)
-            
-        #$# loss_blocks = [None] * N
-
-        loss = 0
-        delta_h_n_plus_1 = None
-        for n in reversed(range(N)):
-
-            x_n = x_blocks[n]
-            y_n = y_blocks[n]
-            h_n = h_blocks[n]
-
-            if torch.is_grad_enabled():
-                if h_n is not None:
-                    # h_n.requires_grad = True
-                    requires_grad(h_n, True)
-
-            z_n, h_n_plus_1 = self._call_rnn(x_n, h_n)
-            if return_y:
-                loss_n, y_n = self._call_out(z_n, y_n, return_y=True)
-                y_blocks[n] = SequenceStruct(y_n)
-            else:
-                loss_n = self._call_out(z_n, y_n)
-            loss_n = SequenceStruct(loss_n)
-
-            if self.loss_scaling == "MEAN":
-                scale = x.seq_lengths[x.sorted_indices[:loss_n.num_seq]]
-                loss_n = loss_n.seq_sum(scale) # leading to (unpacked) sequences of lengths 1
-                loss_n = loss_n.sum()/n_batch # now we have a scalar
-            else:
-                loss_n = loss_n.seq_sum() # leading to (unpacked) sequences of lengths 1
-                loss_n = loss_n.sum() # now we have a scalar
-            
-            if torch.is_grad_enabled():
-                if n < N - 1:
-                    loss_n.backward(retain_graph=True)
-                    h_n_plus_1_ = list(struct_flatten(h_n_plus_1))
-                    delta_h_n_plus_1_ = list(struct_flatten(delta_h_n_plus_1))
-
-                    torch.autograd.backward(h_n_plus_1_, grad_tensors=delta_h_n_plus_1_)
-                else:
-                    loss_n.backward()
-
-                if h_n is not None:
-                    delta_h_n_plus_1 = grad_of(h_n)
-                else:
-                    delta_h_n_plus_1 = None
-
-            loss = loss + loss_n.detach() #.item()
-
-        res = (loss,)
-
-        if return_y:
-            res = res + (SequenceStruct.combine(y_blocks, sorted_indices=x.sorted_indices, unsorted_indices=x.unsorted_indices).struct,)
-        if return_h == 'last':
-            res = res + (h_last,)
-
-        if len(res)==1:
-            res = res[0]
-
-        return res
+from .utilities import breakup_packed_sequence, close_packed_sequence, combine_packed_sequence, div_vector, flatten, ispacked, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, open_packed_sequence, struct_equal, struct_flatten, requires_grad, grad_of, struct_map, struct_map2, struct_unflatten, sum_of_packed_sequence
 
 
 class _CheckedModule(nn.Module):
@@ -305,6 +22,7 @@ class _CheckedModule(nn.Module):
     def __call__(self, *args, **kwargs):
         self.input_parameter_check(*args, **kwargs)
         res = super().__call__(*args, **kwargs)
+
         self.output_parameter_check(res)
         self.reset_checks()
         return res
@@ -341,9 +59,9 @@ class _CheckedModule(nn.Module):
 
     def valid_latent(self, h, name, action):
         if (not isinstance(h, torch.Tensor)):
-            raise TypeError(f"hidden state {action} {name} must be batch-first Tensor, but was {h}")                
-        if h.shape[0] != self.n_batch:
-            raise ValueError(f"hidden state {action} {name} must be batch-first Tensor with batch_size {self.n_batch}, but was shape {h.shape}")
+            raise TypeError(f"hidden state {action} {name} must be Tensor, but was type {type(h)}")                
+        if h.shape[1] != self.n_batch:
+            raise ValueError(f"hidden state {action} {name} must be Tensor with shape (layers, batch_size(={self.n_batch}), ...), but was shape {h.shape}")
 
 
     def check_sequence_arg(self, z, name, action):
@@ -451,6 +169,7 @@ class RNNModule(_CheckedModule):
 
         name = argspec.args[2]
         h = callargs[name]
+
         if h is not None:
             self.check_latent_arg( h, name, 'argument')
 
@@ -484,72 +203,244 @@ class BaseRNN(nn.Module):
         self.out = out
 
 
-    def flatten(x):
-        if isinstance(x, type(None)):
-            return ()
-        if isinstance(x, (torch.Tensor, PackedSequence)):
-            return (x,)
-        if isinstance(x, tuple):
-            return tuple(xi for xi in x if xi is not None)            
+    def call( self, module, *args, **kwargs):
+        f = module.forward
+        filtered_kwargs = {
+            name:kwargs[name]
+            for name,param in inspect.signature(f).parameters.items() if (
+                param.kind is inspect.Parameter.KEYWORD_ONLY or
+                param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+            ) and
+            name in kwargs
+        }
+        return module(*args, **filtered_kwargs)
+    
 
+    def forward_rnn(self, *args, **kwargs):
+        res = self.call( self.rnn, *args, **kwargs)
+        z = res[0]
+        h = res[1] 
 
-    def ispacked(self, x):
-        if isinstance(x, (type(None), PackedSequence)):
-            return True
-        if isinstance(x, tuple) and all( isinstance(xi, (type(None), PackedSequence)) for xi in x):
-            return True
-        if any( isinstance(xi, (type(None), PackedSequence)) for xi in x):
-            raise TypeError("Some, but not all items in x are PackedSequences.")
+        extra_seq = res[2] if len(res)>2 else None
+        extra = res[3] if len(res)>3 else None
+        if len(res)>4:
+            Warning(f"RNNModule returned more than 4 values. Ignoring spurious values of type(s) {tuple(type(x) for x in res[4:])}")
+        return z, h, extra_seq, extra
+        
 
-        return False
-
-
-    def open_packed_sequence(self, x):
-        if isinstance(x, type(None)):
-            return None
-        if isinstance(x, PackedSequence):
-            return x.data.unsqueeze(0)
-        if isinstance(x, tuple):
-            return tuple( self.open_packed_sequence(xi) for xi in x)
-        raise TypeError("x is not a (tuple of) packed sequence(s)")
-
-
-    def close_packed_sequence(self, x, example: PackedSequence):
-        if isinstance(x, type(None)):
-            return None
-        if isinstance(x, PackedSequence):
-            return PackedSequence( data=x.squeeze(0), batch_sizes=example.batch_sizes, 
-            sorted_indices=example.sorted_indices, unsorted_indices=example.unsorted_indices)
-        if isinstance(x, tuple):
-            return tuple( self.close_packed_sequence(xi, example) for xi in x)
-        raise TypeError("x is not a (tuple of) opened packed sequence(s)")
-
+    def forward_out(self, *args, **kwargs):
+        res = self.call( self.out, *args, **kwargs)
+        if type(res) is not tuple:
+            res = (res,)
+        loss = res[0]
+        extra_seq = res[1] if len(res)>1 else None
+        extra = res[2] if len(res)>2 else None
+        if len(res)>3:
+            Warning(f"RNNModule returned more than 3 values. Ignoring spurious values of type(s) {tuple(type(x) for x in res[3:])}")
+        return loss, extra_seq, extra
 
 
 class PlainRNN(BaseRNN):
 
-    def __init__(self, rnn: nn.Module, out: nn.Module, loss_scaling: str):
+    def __init__(self, rnn: nn.Module, out: nn.Module, loss_scaling: str = 'MEAN'):
         
-        super().__init__()
+        super().__init__(rnn, out)
         assert loss_scaling in ['MEAN','SUM']
-        self.rnn = rnn
-        self.out = out
         self.loss_scaling = loss_scaling
 
 
-    def forward(self, x, y, h0, *args, **kwargs):
+    def forward(self, x, y, h0, flatten_output=True, *args, **kwargs):
 
-        z, h, extra_seq_rnn = self.rnn( x, h0, *args, **kwargs)
+        z, h, extra_seq_rnn, extra_rnn = self.forward_rnn( x, h0, *args, **kwargs)
+        
+        if ispacked(x):
+            example = flatten(x)[0]
+            z = open_packed_sequence(z)
+            assert ispacked(y)
+            y = open_packed_sequence(y)
 
-        if self.ispacked(x):
-            example = self.flatten(x)[0]
-            z = self.open_packed_sequence(z)
-            assert self.ispacked(y)
-            y = self.open_packed_sequence(y)
+        loss_seq, extra_seq_out, extra_out = self.forward_out(z, y, *args, **kwargs)
 
-        loss, extra_seq_out = self.out(z, y, *args, **kwargs) 
+        if ispacked(x):
+            extra_seq_out = close_packed_sequence(extra_seq_out, example) 
+            loss_seq = close_packed_sequence(loss_seq, example)
+            if self.loss_scaling == 'MEAN':
+                loss = mean_of_packed_sequence(loss_seq).mean()
+            else:
+                loss = sum_of_packed_sequence(loss_seq).sum()
+        else:
+            loss = loss_seq.mean() if self.loss_scaling == 'MEAN' else loss_seq.sum()
 
-        if self.ispacked(x):
-            extra_seq_out = self.close_packed_sequence(extra_seq_out, example) 
+        if flatten_output:
+            return flatten((loss, loss_seq, h,  extra_seq_rnn, extra_rnn, extra_seq_out, extra_out))
+        else:
+            return loss, loss_seq, h,  extra_seq_rnn, extra_rnn, extra_seq_out, extra_out
 
-        return loss, extra_seq_rnn, extra_seq_out, h
+
+
+class VLRNN(PlainRNN):
+
+    def __init__(self, rnn: nn.Module, out: nn.Module, loss_scaling: str = 'MEAN', N: Optional[int] = None):
+        
+        super().__init__(rnn, out, loss_scaling)
+        self.N = N
+
+
+    @staticmethod
+    def breakup_sequence(x: Union[torch.Tensor,PackedSequence], N) -> List[Union[torch.Tensor,PackedSequence]]:
+        if isinstance(x, torch.Tensor):
+            return list(x.chunk( N, dim=1))
+
+        if isinstance(x, PackedSequence):
+            return breakup_packed_sequence(x, N)
+
+    @staticmethod
+    def breakup(x, N: int) -> List[SequenceStruct]:
+        if type(x) is tuple:
+            return list(zip(*(VLRNN.breakup_sequence(xi, N) for xi in x)))
+        else:
+            return VLRNN.breakup_sequence(x, N)
+
+
+    @staticmethod
+    def combine_sequence(x: List[Union[torch.Tensor,PackedSequence]], example) -> Union[torch.Tensor,PackedSequence]:
+        if isinstance(x[0], torch.Tensor):
+            return torch.cat(x, dim=1)
+    
+        if isinstance(x[0], PackedSequence):
+            return combine_packed_sequence(x, example.sorted_indices, example.unsorted_indices)
+
+
+    @staticmethod
+    def combine(s: List[Union[torch.Tensor,PackedSequence, tuple]], example) -> SequenceStruct:
+        if isinstance( s[0], list):
+            return tuple(VLRNN.combine_sequence(list(x), example) for x in zip(*s))
+        else:
+            return VLRNN.combine_sequence(s, example)
+  
+
+
+    def forward(self, x, y, h0,  N=None, *args, **kwargs):
+
+        example = flatten(x)[0]
+        packed = isinstance(example, PackedSequence)
+        if packed:
+            seq_lengths = lengths_of_packed_sequence(example)
+        else:
+            seq_lengths = example.shape[1]
+
+        if N is None:
+            N = self.N
+        assert N is not None and N>0
+
+        #! n_batch = x.batch_size()
+        #! assert n_batch > 0 
+
+        x_blocks = self.breakup(x, N)
+        if y is not None:
+            y_blocks = self.breakup(y, N)
+            assert len(x_blocks) == len(y_blocks)
+        else:
+            y_blocks = [None] * N
+
+
+        N = len(x_blocks) # may be different than requested for packed sequences
+
+        h_blocks = [h0] + [None] * N
+        h_last = None # to aggregate the last
+        with torch.no_grad():
+            for n in range(N):
+                x_n = x_blocks[n]
+                h_n = h_blocks[n]
+                
+                z, h, extra_seq_rnn, extra_rnn = self.forward_rnn( x_n, h_n, *args, **kwargs)
+
+                if h_last is None or not packed:
+                    h_last = h
+                else:  
+                    def f(h1,h2):
+                        res = h1.clone()
+                        res[:,:h2.shape[1]] = h2
+                        return res                      
+                    h_last = struct_map2( f, h_last, h)
+
+                if n<N-1:
+                    if not packed:
+                        h_blocks[n+1] = h
+                    else:
+                        def f(h):
+                            return h[:,:len(flatten(x_blocks[n+1])[0].sorted_indices)]
+                        h_blocks[n+1] = struct_map(f, h)
+
+        if packed:
+            h_last = struct_map(lambda h: h[:,x.unsorted_indices], h_last)
+
+        loss = 0
+        delta_h_n_plus_1 = None
+        loss_seq_blocks = [None] * N
+        extra_seq_rnn_blocks = [None] * N
+        extra_seq_out_blocks = [None] * N
+
+        for n in reversed(range(N)):
+
+            x_n = x_blocks[n]
+            y_n = y_blocks[n]
+            h_n = h_blocks[n]
+
+            if torch.is_grad_enabled():
+                if h_n is not None:
+                    # h_n.requires_grad = True
+                    requires_grad(h_n, True)
+
+            loss_n, loss_seq_n, h_n_plus_1,  extra_seq_rnn_n, extra_rnn, extra_seq_out_n, extra_out = super().forward(x_n, y_n, h_n, False, *args, **kwargs)
+
+            loss_seq_blocks[n] = loss_seq_n
+            extra_seq_rnn_blocks[n] = extra_seq_rnn_n
+            extra_seq_out_blocks[n] = extra_seq_out_n
+        
+            if packed:
+                loss_n = sum_of_packed_sequence(loss_seq_n)
+                if self.loss_scaling == 'MEAN':
+                    scale = seq_lengths[example.sorted_indices[:len(loss_n)]]
+                    loss_n = (loss_n / scale).sum() / len(seq_lengths)
+                else:
+                    loss_n = loss_n.sum()
+            else:
+                if self.loss_scaling == 'MEAN':
+                    loss_n = loss_n * flatten(x_n)[0].shape[1] / seq_lengths 
+
+            # else, super().forward computes the loss corectly
+            
+            if torch.is_grad_enabled():
+                if n < N - 1:
+                    loss_n.backward(retain_graph=True)
+
+                    # we need to strip h_n_plus_1 from all sequences that don't continue in the next block
+                    if packed:
+                        def f(h):
+                            return h[:,:len(flatten(x_blocks[n+1])[0].sorted_indices)]
+                        h_n_plus_1 = struct_map(f, h_n_plus_1)
+
+                    h_n_plus_1_ = list(h_n_plus_1)
+                    delta_h_n_plus_1_ = list(delta_h_n_plus_1)
+
+                    torch.autograd.backward(h_n_plus_1_, grad_tensors=delta_h_n_plus_1_)
+                else:
+                    loss_n.backward()
+
+                if h_n is not None:
+                    delta_h_n_plus_1 = grad_of(h_n)
+                else:
+                    delta_h_n_plus_1 = None
+
+            loss = loss + loss_n.detach() #.item()
+
+
+        loss_seq = VLRNN.combine( loss_seq_blocks, example)
+        extra_seq_rnn = VLRNN.combine( extra_seq_rnn_blocks, example)
+        extra_seq_out = VLRNN.combine( extra_seq_out_blocks, example)
+        
+        if (extra_rnn is not None) or (extra_out is not None):
+            Warning("Ignoring and discarding 'extra_rnn' and 'extra_out' outputs in VLRNN.forward !")
+
+        return flatten((loss, loss_seq, h_last, extra_seq_rnn, extra_seq_out))

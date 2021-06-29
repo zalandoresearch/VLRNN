@@ -1,11 +1,8 @@
 from collections import namedtuple
 from vlrnn.block_rnn import RNNModule
 import torch
-from torch.nn.utils.rnn import PackedSequence, pack_padded_sequence, pack_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, pack_sequence, pad_packed_sequence
 
-import sys
-sys.path.append(".")
-from vlrnn import OutputModule
 
 
 
@@ -37,9 +34,9 @@ def sequences(globals):
 
     x_short = torch.randn(globals.n_batch, globals.n_seq-2, 10)
 
-    h1 = torch.randn(globals.n_batch)
-    h2 = torch.randint(0,5,(globals.n_batch, 1))
-    h_bad = torch.randn(globals.n_batch+1, globals.n_seq)
+    h1 = torch.randn(1, globals.n_batch)
+    h2 = torch.randint(0,5,(1, globals.n_batch, 1))
+    h_bad = torch.randn(1, globals.n_batch+1, globals.n_seq)
     return  xp1, xp2, xp3, x1, x2, x3, x_short, h1, h2, h_bad
 
 
@@ -66,7 +63,10 @@ def test_forward1(sequences):
             return x1, h1
             
     Rnn()( x1) 
-    Rnn()( x1, x2) # ok, h=x2
+
+    with pytest.raises(ValueError): 
+        Rnn()( x1, x2) # x2 is not a valid latent state 
+
     Rnn()( x1=x2, param=x1, h=h1)
 
     with pytest.raises(TypeError): 

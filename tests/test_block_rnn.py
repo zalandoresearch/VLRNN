@@ -1,9 +1,8 @@
 from collections import namedtuple
-from typing import NamedTuple
 
 import sys
+from vlrnn.block_rnn import OutputModule, PlainRNN, RNNModule, VLRNN
 sys.path.append(".")
-from vlrnn import BlockRNN, breakup_packed_sequence, combine_packed_sequence
 from tests.test_utilities import equal_packed_sequences
 
 
@@ -40,53 +39,22 @@ def globals(request, device):
         var = request.param
     )
 
-# input model
-class Inp(nn.Sequential):
-    def __init__(self, n_in):
-        super().__init__(nn.Linear(n_in ,10), nn.ELU(), nn.Linear(10 ,n_in), nn.ELU())
-
-    def forward(self, x):
-        if isinstance(x, torch.Tensor):
-            return super().forward(x)
-        else:
-            return PackedSequence(data=super().forward(x.data), batch_sizes=x.batch_sizes, 
-                                  sorted_indices=x.sorted_indices, unsorted_indices=x.unsorted_indices)
-
-@pytest.fixture(scope="module")
-def inp(globals):
-    return Inp(globals.n_in).to(globals.device, dtype=globals.dtype)
-
 
 # output model
-class Outp(nn.Sequential):
+class Outp(OutputModule):
 
-    def __init__(sel, n_hidden, n_out):
-        super().__init__( nn.Linear(n_hidden ,10) ,nn.ELU() ,nn.Linear(10 ,n_out))
+    def __init__(self, n_hidden, n_out):
+        super().__init__()
+        self.ffwd = nn.Sequential(nn.Linear(n_hidden, 10), nn.ELU(), nn.Linear(10, n_out))
 
-    def _forward(self, z, y, return_y):
-        logits = super().forward(z)
+    def forward(self, z, y, return_y=False):
+        logits = self.ffwd(z)
         loss =  -torch.distributions.Categorical(logits=logits).log_prob(y)
         if return_y:
             return loss, y
         else:
             return loss
 
-    def forward(self, z, y, return_y=False):
-
-        
-        if isinstance(z, torch.Tensor):
-            return self._forward(z, y, return_y)
-        else:
-            res = self._forward(z.data, y.data, return_y)
-            if return_y:
-                res = ( PackedSequence(data=res[0], batch_sizes=z.batch_sizes, 
-                               sorted_indices=z.sorted_indices, unsorted_indices=z.unsorted_indices),
-                        PackedSequence(data=res[1], batch_sizes=z.batch_sizes, 
-                               sorted_indices=z.sorted_indices, unsorted_indices=z.unsorted_indices) )
-            else:
-                res = PackedSequence(data=res, batch_sizes=z.batch_sizes, 
-                               sorted_indices=z.sorted_indices, unsorted_indices=z.unsorted_indices)
-            return res
 
 @pytest.fixture(scope="module")
 def outp(globals):
@@ -94,7 +62,12 @@ def outp(globals):
 
 
 # rnn models
-class FancyRNN(nn.Module):
+
+class GRU(nn.GRU, RNNModule):
+    pass
+class LSTM(nn.LSTM, RNNModule):
+    pass
+class FancyRNN(RNNModule):
 
     def __init__(self, n_in, n_hidden):
         super().__init__()
@@ -103,18 +76,18 @@ class FancyRNN(nn.Module):
 
     def forward(self, x, h):
         tmp, h_gru = self.gru(x, None if h is None else h[0])
-        z, h_lstm = self.lstm(tmp, None if h is None else h[1])
+        z, h_lstm = self.lstm(tmp, None if h is None else h[1:3])
 
-        return z, (h_gru, h_lstm)
+        return z, (h_gru, *h_lstm)
 
 
 
-@pytest.fixture(scope="module", params=['GRU','LSTM','FANCY'])
+@pytest.fixture(scope="module", params=['FANCY', 'GRU', 'LSTM'])
 def rnn(request,globals):
     if request.param=='GRU':
-        return nn.GRU(globals.n_in, globals.n_hidden, batch_first=True).to(globals.device, dtype=globals.dtype)
+        return GRU(globals.n_in, globals.n_hidden, batch_first=True).to(globals.device, dtype=globals.dtype)
     if request.param=='LSTM':
-        return nn.LSTM(globals.n_in, globals.n_hidden, batch_first=True, num_layers=3).to(globals.device, dtype=globals.dtype)
+        return LSTM(globals.n_in, globals.n_hidden, batch_first=True, num_layers=3).to(globals.device, dtype=globals.dtype)
     if request.param=='FANCY':
         return FancyRNN(globals.n_in, globals.n_hidden).to(globals.device, dtype=globals.dtype)
 
@@ -153,15 +126,20 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         # running as plain RNN
         #################################################
         
-        mods.zero_grad()
-        z, h = rnn(x, None)
-        l_std = outp(z, y)
-        if globals.var: #'PACKED'
-            l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
-            l_std = l_std.sum(1)
-            if loss_scale == "MEAN":
-                l_std /= lens.to(globals.device) 
-        l_std = l_std.mean() if loss_scale == "MEAN" else l_std.sum()
+        mod_plain = PlainRNN(rnn, outp, loss_scaling=loss_scale)
+        mod_plain.zero_grad()
+        l_std, loss_seq, h = mod_plain(x, y, None)
+
+
+        # mods.zero_grad()
+        # z, h = rnn(x, None)
+        # l_std = outp(z, y)
+        # if globals.var: #'PACKED'
+        #     l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
+        #     l_std = l_std.sum(1)
+        #     if loss_scale == "MEAN":
+        #         l_std /= lens.to(globals.device) 
+        # l_std = l_std.mean() if loss_scale == "MEAN" else l_std.sum()
         print(l_std)
     
         l_std.backward()
@@ -175,8 +153,9 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         #################################################
 
         mods.zero_grad()
-        vlrnn = BlockRNN(rnn, outp, loss_scale)
-        l_chunk = vlrnn(x, None, y,  N)
+        vlrnn = VLRNN(rnn, outp, loss_scale)
+        l_chunk, loss_seq, h = vlrnn(x, y, None,  N=N)
+
         g_chunk = [p.grad.clone() for p in mods.parameters()]
         print("loss (chunked computation) {:.6f}".format(l_chunk))
         l_chunk = l_chunk.item()
@@ -185,9 +164,9 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         #print("losses and gradients equal:", good)
         #print()
 
-        l_chunk, y_ = vlrnn(x, None, y,  N, return_y=True)
-        equal_sequence(y, y_)
+        # l_chunk, y_ = vlrnn(x, None, y,  N, return_y=True)
+        # equal_sequence(y, y_)
 
-        l_chunk, y_, h = vlrnn(x, None, y,  N, return_y=True, return_h='last')
-        l_chunk, h = vlrnn(x, None, y,  N, return_h='last')
+        # l_chunk, y_, h = vlrnn(x, None, y,  N, return_y=True, return_h='last')
+        # l_chunk, h = vlrnn(x, None, y,  N, return_h='last')
         

@@ -1,2 +1,2 @@
-from .block_rnn import SequenceStruct, BlockRNN, OutputModule, RNNModule, BaseRNN, PlainRNN, VLRNN
+from .block_rnn import OutputModule, RNNModule, BaseRNN, PlainRNN, VLRNN
 from .utilities import *

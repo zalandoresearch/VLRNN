@@ -1,17 +1,14 @@
-from collections import namedtuple
-from typing import NamedTuple, Sequence
 
 import sys
 sys.path.append(".")
-from vlrnn import div_vector, struct_flatten, struct_unflatten, struct_equal, lengths_of_packed_sequence, SequenceStruct
+from vlrnn import struct_flatten, struct_unflatten, struct_equal, lengths_of_packed_sequence
 
 import pytest
 
 import torch
 torch.manual_seed(0)
 
-import torch.nn as nn
-from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import pack_sequence, pad_packed_sequence
 
 
 x1=torch.randn(50,5,4)
@@ -132,74 +129,3 @@ def test_struct_flatten_unflatten(seq, make_struct):
     f1 = struct_flatten(s1)
     s2 = struct_unflatten( f1, s1)
     assert struct_equal(s1,s2)
-
-
-def test_SequenceStruct_validate(valid_seq, make_struct):
-    x,y,z = valid_seq
-
-    s = SequenceStruct(make_struct(x,y,z)[0])
-    s.validate()
-
-
-def test_SequenceStruct_validate_fail1(valid_seq, make_struct_bad):
-    x,y,z = valid_seq
-
-    with pytest.raises(Exception):       
-        s = SequenceStruct(make_struct_bad(x,y,z)[0])
-    
-
-def test_SequenceStruct_validate_fail2(mixed_seq, make_struct):
-    x,y,z = mixed_seq
-    
-    s, s_flat = make_struct(x,y,z)
-    if len(list(struct_flatten(s)))>1:
-        with pytest.raises(Exception):       
-            SequenceStruct(s)
-
-    
-
-def test_SequencesStruct_breakup_combine(valid_seq, make_struct):
-    x,y,z = valid_seq
-    s1 = SequenceStruct(make_struct(x,y,z)[0])
-    combine_args = {'sorted_indices': s1.sorted_indices, 
-                    'unsorted_indices': s1.unsorted_indices, }
-    s2 = SequenceStruct.combine(s1.breakup(5), **combine_args)
-
-    assert s1.is_compatible_with(s2)
-    assert s2.is_compatible_with(s1)
-    #assert struct_equal(s1.struct, s2.struct)
-     
-
-@pytest.mark.parametrize("method",['MEAN','SUM'])
-def test_SequencesStruct_stats(valid_seq, make_struct, method):
-
-    def stats(x):
-        if isinstance(x, torch.Tensor):
-            if method=='MEAN':
-                return x.mean(1, keepdim=True)
-            else:
-                return x.sum(1, keepdim=True)
-        elif isinstance(x, PackedSequence):
-            x,l = pad_packed_sequence(x)
-            if method=='MEAN':
-                return div_vector(x.sum(0), l.to(x.device), dim=0).unsqueeze(1)
-            else:
-                return x.sum(0).unsqueeze(1)
-
-    x,y,z = valid_seq
-    s = SequenceStruct(make_struct(x,y,z)[0])
-
-    if method=='MEAN':
-        l1 = list(struct_flatten(s.seq_mean().struct))
-    else:
-        l1 = list(struct_flatten(s.seq_sum().struct))
-    l2 = [stats(si) for si in struct_flatten(s.struct)]
-    assert struct_equal(l1,l2)
-
-def test_SequencesStruct_sum_fixed(fixed_seq, make_struct):
-    x,y,z = fixed_seq
-    s = SequenceStruct(make_struct(x,y,z)[0])
-
-    l1 = list(struct_flatten(s.seq_sum().struct))
-    l2 = [si.sum(1, keepdim=True) for si in struct_flatten(s.struct)]
-    assert struct_equal(l1,l2)
