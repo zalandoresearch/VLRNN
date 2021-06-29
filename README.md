@@ -27,7 +27,19 @@ Except for the latent (hidden state) activations and deltas, everything is avail
 ![equation](https://latex.codecogs.com/png.latex?%5Cinline%20%5Clarge%20h_%7Bn%5CDelta%20t%7D%2C%5C%20n%3D0%5Cldots%20N-1) for all N blocks.
 Then we compute usual forward/backward passed through each block from last to first, collect gradients to all the (shared) weights in the block, and release all activations and deltas of this block, except ![\delta h_t](https://latex.codecogs.com/png.latex?%5Cinline%20%5Clarge%20%5Cdelta%20h_t) at the block input, from GPU memory. ![\delta h_t](https://latex.codecogs.com/png.latex?%5Cinline%20%5Clarge%20%5Cdelta%20h_t) is feed into the backward process of the preceding block.
 
+## Installation
+All you need is
+```
+$ pip install vlrnn
+```
+## Development
 
+To help in developing VLRNN, clone the github repo and change to the cloned directory on the command line. Then 
+```
+$ pip install -e .
+$ pytest tests/
+```
+will install the package into your python path. Changes to files in the directory are reflected in the python package when loaded.
 
 ## License
 
