@@ -1,16 +1,14 @@
 from __future__ import annotations
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 import inspect
 from typing import List, Optional, Union
 
-import sys
 
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import PackedSequence, pack_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import PackedSequence
 
-from .utilities import breakup_packed_sequence, close_packed_sequence, combine_packed_sequence, div_vector, flatten, ispacked, lengths_of_packed_sequence, mean_of_packed_sequence, mul_vector, open_packed_sequence, struct_equal, struct_flatten, requires_grad, grad_of, struct_map, struct_map2, struct_unflatten, sum_of_packed_sequence
-
+from .utilities import *
 
 class _CheckedModule(nn.Module):
 
@@ -295,7 +293,7 @@ class VLRNN(PlainRNN):
             return breakup_packed_sequence(x, N)
 
     @staticmethod
-    def breakup(x, N: int) -> List[SequenceStruct]:
+    def breakup(x, N: int) -> List[Union[torch.Tensor,PackedSequence, tuple]]:
         if type(x) is tuple:
             return list(zip(*(VLRNN.breakup_sequence(xi, N) for xi in x)))
         else:
@@ -312,7 +310,7 @@ class VLRNN(PlainRNN):
 
 
     @staticmethod
-    def combine(s: List[Union[torch.Tensor,PackedSequence, tuple]], example) -> SequenceStruct:
+    def combine(s: List[Union[torch.Tensor,PackedSequence, tuple]], example) -> Union[torch.Tensor,PackedSequence, tuple]:
         if isinstance( s[0], list):
             return tuple(VLRNN.combine_sequence(list(x), example) for x in zip(*s))
         else:
