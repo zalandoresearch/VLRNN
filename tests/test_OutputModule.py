@@ -2,8 +2,6 @@ from collections import namedtuple
 import torch
 from torch.nn.utils.rnn import pack_sequence
 
-import sys
-sys.path.append(".")
 from vlrnn import OutputModule
 
 

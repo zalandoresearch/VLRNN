@@ -1,5 +1,5 @@
 from collections import namedtuple
-from vlrnn.block_rnn import RNNModule
+from vlrnn import RNNModule
 import torch
 from torch.nn.utils.rnn import pack_padded_sequence, pack_sequence, pad_packed_sequence
 

@@ -1,6 +1,4 @@
 
-import sys
-sys.path.append(".")
 from vlrnn import  breakup_packed_sequence, combine_packed_sequence, struct_equal, lengths_of_packed_sequence
 
 

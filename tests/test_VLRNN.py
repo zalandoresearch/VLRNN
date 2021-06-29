@@ -1,8 +1,6 @@
 from collections import namedtuple
 
-import sys
-from vlrnn.block_rnn import OutputModule, PlainRNN, RNNModule, VLRNN
-sys.path.append(".")
+from vlrnn import OutputModule, PlainRNN, RNNModule, VLRNN
 from tests.test_utilities import equal_packed_sequences
 
 
@@ -130,18 +128,6 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         mod_plain.zero_grad()
         l_std, loss_seq, h = mod_plain(x, y, None)
 
-
-        # mods.zero_grad()
-        # z, h = rnn(x, None)
-        # l_std = outp(z, y)
-        # if globals.var: #'PACKED'
-        #     l_std, lens = pad_packed_sequence(l_std, batch_first=True) 
-        #     l_std = l_std.sum(1)
-        #     if loss_scale == "MEAN":
-        #         l_std /= lens.to(globals.device) 
-        # l_std = l_std.mean() if loss_scale == "MEAN" else l_std.sum()
-        print(l_std)
-    
         l_std.backward()
         l_std = l_std.item()
         g_std = [p.grad.clone() for p in mods.parameters()]
@@ -161,12 +147,3 @@ def test_BlockRNN( globals, outp, rnn, N, loss_scale):
         l_chunk = l_chunk.item()
 
         assert all([torch.allclose(g1, g2) for g1, g2 in zip(g_chunk, g_std )])
-        #print("losses and gradients equal:", good)
-        #print()
-
-        # l_chunk, y_ = vlrnn(x, None, y,  N, return_y=True)
-        # equal_sequence(y, y_)
-
-        # l_chunk, y_, h = vlrnn(x, None, y,  N, return_y=True, return_h='last')
-        # l_chunk, h = vlrnn(x, None, y,  N, return_h='last')
-        
