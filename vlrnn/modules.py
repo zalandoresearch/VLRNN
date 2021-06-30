@@ -371,7 +371,7 @@ class VLRNN(PlainRNN):
                         h_blocks[n+1] = struct_map(f, h)
 
         if packed:
-            h_last = struct_map(lambda h: h[:,x.unsorted_indices], h_last)
+            h_last = struct_map(lambda h: h[:,example.unsorted_indices], h_last)
 
         loss = 0
         delta_h_n_plus_1 = None
