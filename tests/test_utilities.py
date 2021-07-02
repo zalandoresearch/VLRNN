@@ -35,6 +35,9 @@ def valid_packed_sequence(x: PackedSequence) -> bool :
     # assert x.data.device == x.batch_sizes.device # for some reason batch_sizes reside on cpu
     assert x.data.device == x.sorted_indices.device
     assert x.data.device == x.unsorted_indices.device
+
+    # batch_sizes always on cpu
+    assert x.batch_sizes.device == torch.device('cpu')
     
 
 def equal_packed_sequences(x, y):

@@ -134,7 +134,7 @@ def breakup_packed_sequence( x: PackedSequence, N) -> List[PackedSequence]:
             idxs = torch.arange(x.batch_sizes[last_i], device=x.data.device)
             x_out.append( PackedSequence(
                 data = x.data[last_j:j],
-                batch_sizes = x.batch_sizes[last_i:i],
+                batch_sizes = x.batch_sizes[last_i:i].cpu(),
                 sorted_indices = idxs,
                 unsorted_indices = idxs
             ))
@@ -182,7 +182,7 @@ def combine_packed_sequence(x_chunk, sorted_indices=None, unsorted_indices=None)
         x_unsorted_indices = unsorted_indices
 
     return PackedSequence( data = x_data,
-                            batch_sizes=x_batch_sizes,
+                            batch_sizes=x_batch_sizes.cpu(),
                             sorted_indices=x_sorted_indices,
                             unsorted_indices=x_unsorted_indices)
     
@@ -252,7 +252,7 @@ def close_packed_sequence(x, example: PackedSequence):
     if isinstance(x, type(None)):
         return None
     if isinstance(x, torch.Tensor):
-        return PackedSequence( data=x.squeeze(0), batch_sizes=example.batch_sizes, 
+        return PackedSequence( data=x.squeeze(0), batch_sizes=example.batch_sizes.cpu(), 
         sorted_indices=example.sorted_indices, unsorted_indices=example.unsorted_indices)
     if isinstance(x, tuple):
         return tuple( close_packed_sequence(xi, example) for xi in x)
