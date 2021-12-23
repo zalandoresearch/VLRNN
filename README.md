@@ -1,4 +1,4 @@
-# ❌ ❌ ❌  This repository is archived. It's continues to being maintained at (https://github.com/rvollgraf/VLRNN) ❌ ❌ ❌ 
+# ❌ ❌  This repository is archived. It's continues to being maintained at (https://github.com/rvollgraf/VLRNN) ❌ ❌ 
 
 # Very Long Recurrent Neural Networks
 RNN for long sequences usually have an adverse ratio of GPU utilization over memory consumption. Processing long sequences recurrently in general does not allow parallelization over the time dimension, as future activations depend on past activations. The only option for parallelization is over the batch dimension (increasing the batch size). 
